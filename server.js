@@ -126,6 +126,7 @@ async function initDb() {
     ALTER TABLE sales ADD COLUMN IF NOT EXISTS voided_by BIGINT REFERENCES app_users(id);
     ALTER TABLE sales ADD COLUMN IF NOT EXISTS void_reason TEXT;
     CREATE INDEX IF NOT EXISTS idx_sales_cash_session ON sales(cash_session_id);
+    SELECT setval(pg_get_serial_sequence('cash_sessions','id'), GREATEST(COALESCE((SELECT MAX(id) FROM cash_sessions),0), (SELECT last_value FROM cash_sessions_id_seq)), TRUE);
     CREATE INDEX IF NOT EXISTS idx_sale_items_product ON sale_items(product_code, product_name);
     CREATE INDEX IF NOT EXISTS idx_user_sessions_expiry ON user_sessions(expires_at);
   `);
@@ -232,7 +233,9 @@ app.get("/api/ranking", auth, async (req, res, next) => {
 
 app.get("/api/sales/current", auth, async (req, res, next) => {
   try {
-    const cash = await activeCashSession();
+    let cash = await activeCashSession();
+    const assigned = await pool.query("UPDATE cash_sessions SET opened_by=COALESCE(opened_by,$2) WHERE id=$1 RETURNING *", [cash.id, req.user.id]);
+    cash = assigned.rows[0];
     const totals = await pool.query(`
       SELECT
         COALESCE(SUM(total),0)::numeric(12,2) AS revenue,
@@ -288,6 +291,7 @@ app.post("/api/sales", auth, async (req, res, next) => {
 
     await client.query("BEGIN");
     const cash = await activeCashSession(client);
+    await client.query("UPDATE cash_sessions SET opened_by=COALESCE(opened_by,$2) WHERE id=$1", [cash.id, req.user.id]);
     const sale = await client.query(
       "INSERT INTO sales(cash_session_id,user_id,payment_method,total) VALUES($1,$2,$3,$4) RETURNING id",
       [cash.id, req.user.id, paymentMethod, total]
@@ -306,7 +310,7 @@ app.post("/api/sales", auth, async (req, res, next) => {
   } finally { client.release(); }
 });
 
-app.post("/api/cash/close/:id", auth, adminOnly, async (req, res, next) => {
+app.post("/api/cash/close/:id", auth, async (req, res, next) => {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -391,14 +395,14 @@ app.get("/api/reports/:id.pdf", auth, async (req, res, next) => {
     const params = [id];
     let ownerFilter = "";
     if (req.user.role !== "admin") { params.push(req.user.id); ownerFilter = "AND s.user_id=$2"; }
-    const session = await pool.query("SELECT id,opened_at,closed_at,opening_fund,closing_cash,closing_pos FROM cash_sessions WHERE id=$1", [id]);
+    const session = await pool.query("SELECT c.id,c.opened_at,c.closed_at,c.opening_fund,c.closing_cash,c.closing_pos,opener.username AS opened_by_name,closer.username AS closed_by_name FROM cash_sessions c LEFT JOIN app_users opener ON opener.id=c.opened_by LEFT JOIN app_users closer ON closer.id=c.closed_by WHERE c.id=$1", [id]);
     if (!session.rowCount) return res.status(404).json({ error: "Cassa non trovata." });
     const rows = await pool.query(`
       SELECT s.id,s.created_at,s.payment_method,s.total,u.username,
              COALESCE(string_agg(si.product_name || ' x ' || si.quantity, ', ' ORDER BY si.id), '') AS items
       FROM sales s JOIN app_users u ON u.id=s.user_id
       LEFT JOIN sale_items si ON si.sale_id=s.id
-      WHERE s.cash_session_id=$1 AND s.voided_at IS NULL ${ownerFilter}
+      WHERE s.cash_session_id=$1 ${ownerFilter}
       GROUP BY s.id,u.username ORDER BY s.created_at,s.id
     `, params);
     const doc = new PDFDocument({ size: "A4", margin: 42 });
@@ -409,7 +413,9 @@ app.get("/api/reports/:id.pdf", auth, async (req, res, next) => {
     const euro = value => "EUR " + Number(value || 0).toFixed(2);
     doc.fontSize(18).text("Resoconto cassa #" + id);
     doc.moveDown(0.4).fontSize(10).text("Apertura: " + new Date(cash.opened_at).toLocaleString("it-IT"));
+    doc.text("Cassiere in apertura: " + (cash.opened_by_name || "Non registrato"));
     doc.text("Chiusura: " + (cash.closed_at ? new Date(cash.closed_at).toLocaleString("it-IT") : "Aperta"));
+    doc.text("Cassiere in chiusura: " + (cash.closed_by_name || "—"));
     doc.text("Fondo iniziale: " + euro(cash.opening_fund));
     if (req.user.role === "admin") {
       doc.text("Contanti a chiusura: " + euro(cash.closing_cash));
@@ -422,7 +428,8 @@ app.get("/api/reports/:id.pdf", auth, async (req, res, next) => {
       if (doc.y > 735) doc.addPage();
       total += Number(sale.total);
       doc.font("Helvetica-Bold").text("#" + sale.id + " · " + new Date(sale.created_at).toLocaleString("it-IT") + " · " + sale.payment_method + " · " + euro(sale.total));
-      doc.font("Helvetica").text("Operatore: " + sale.username);
+      doc.font("Helvetica").text("Cassiere: " + sale.username);
+      if (sale.voided_at) doc.text("STORNATA il " + new Date(sale.voided_at).toLocaleString("it-IT") + " · Motivo: " + (sale.void_reason || "—"));
       if (sale.items) doc.text("Articoli: " + sale.items);
       doc.moveDown(0.45);
     }
@@ -519,8 +526,8 @@ app.get("/api/admin/cash-sessions", auth, adminOnly, async (req, res, next) => {
   try {
     const r = await pool.query(`
       SELECT c.id,c.opened_at,c.closed_at,c.opening_fund,c.closing_cash,c.closing_pos,
-             COALESCE(SUM(s.total),0)::numeric(12,2) AS revenue,
-             COUNT(s.id)::int AS transactions,
+             COALESCE(SUM(s.total) FILTER (WHERE s.voided_at IS NULL),0)::numeric(12,2) AS revenue,
+             COUNT(s.id) FILTER (WHERE s.voided_at IS NULL)::int AS transactions,
              opener.username AS opened_by_name, closer.username AS closed_by_name
       FROM cash_sessions c
       LEFT JOIN sales s ON s.cash_session_id=c.id
