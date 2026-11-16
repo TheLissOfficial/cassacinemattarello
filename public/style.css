@@ -67,3 +67,19 @@ body.report-view #reportsPanel { display:block !important; max-height:none; over
 body.report-view .report-row { align-items:flex-start; flex-wrap:wrap; padding:12px 4px; }
 body.report-view .report-row > span:last-child { display:flex; gap:6px; flex-wrap:wrap; }
 body.report-view .sale-list { max-height:none; }
+
+
+/* Schermata iniziale: la cassa si apre solo su richiesta esplicita */
+.cash-open-screen { position:fixed; inset:0; z-index:900; display:flex; align-items:center; justify-content:center; padding:24px; overflow:auto; background:radial-gradient(circle at 50% 35%,#243653 0%,#101827 58%,#090e17 100%); }
+.cash-open-card { width:min(760px,100%); text-align:center; padding:clamp(24px,5vw,56px); border:1px solid #344866; border-radius:22px; background:rgba(15,23,38,.94); box-shadow:0 24px 80px rgba(0,0,0,.45); }
+.cash-open-kicker { color:#70d6c1; font-weight:800; letter-spacing:.18em; font-size:.78rem; margin-bottom:18px; }
+.cash-open-card h1 { color:#fff; font-size:clamp(2rem,5vw,3.5rem); margin:0 0 12px; }
+.cash-open-card p { color:#bdc9d9; font-size:1.05rem; margin:0 0 32px; }
+.cash-open-button { display:block; width:100%; min-height:clamp(110px,20vh,190px); border:0; border-radius:18px; background:linear-gradient(135deg,#19b982,#0b8d68); color:#fff; font-size:clamp(2rem,6vw,4rem); font-weight:900; letter-spacing:.035em; cursor:pointer; box-shadow:0 12px 34px rgba(16,185,129,.25); transition:transform .15s,filter .15s; }
+.cash-open-button:hover { transform:translateY(-3px); filter:brightness(1.08); }
+.cash-open-button:disabled { opacity:.65; cursor:wait; transform:none; }
+.cash-open-secondary { display:flex; justify-content:center; flex-wrap:wrap; gap:10px; margin-top:24px; }
+.cash-open-secondary button { min-height:42px; }
+#closedReportsPanel { text-align:left; max-height:38vh; overflow:auto; margin-top:18px; }
+body.cash-closed #posContainer > :not(#cashOpenScreen) { display:none !important; }
+body.cash-closed .cash-open-screen { display:flex; }
