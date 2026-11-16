@@ -220,7 +220,7 @@ app.get("/api/ranking", auth, async (req, res, next) => {
     const r = await pool.query(`
       SELECT product_code AS code, product_name AS name, SUM(quantity)::int AS quantity
       FROM sale_items
-      JOIN sales s ON s.id=sale_items.sale_id
+      JOIN sales s ON s.id=si.sale_id
       WHERE product_code IS NOT NULL AND s.voided_at IS NULL
       GROUP BY product_code, product_name
       ORDER BY SUM(quantity) DESC, product_name ASC
