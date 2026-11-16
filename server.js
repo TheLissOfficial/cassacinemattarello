@@ -193,6 +193,45 @@ async function activeCashSession(client = pool) {
 const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 12, standardHeaders: true, legacyHeaders: false });
 app.get("/api/health", (req, res) => res.json({ ok: true }));
 
+const simulations = new Map();
+function simulationFor(userId) {
+  let sim=simulations.get(String(userId));
+  if(!sim){sim={openedAt:null,closedAt:null,sales:[],nextSaleId:1};simulations.set(String(userId),sim);}
+  return sim;
+}
+app.get("/api/sim/current",auth,adminOnly,(req,res)=>{
+  const sim=simulationFor(req.user.id),active=!!sim.openedAt&&!sim.closedAt;
+  const t=sim.sales.reduce((v,x)=>{v.revenue+=x.total;v[x.payment_method==="Contanti"?"cash":"pos"]+=x.total;v.transactions++;return v;},{revenue:0,cash:0,pos:0,transactions:0});
+  const items={};sim.sales.forEach(x=>x.items.forEach(i=>items[i.name]=(items[i.name]||0)+i.quantity));
+  res.json({cashSession:active?{id:"SIM",opened_at:sim.openedAt,opening_fund:"250.00"}:null,totals:{revenue:t.revenue.toFixed(2),cash:t.cash.toFixed(2),pos:t.pos.toFixed(2),transactions:t.transactions},items:Object.entries(items).map(([name,quantity])=>({name,quantity}))});
+});
+app.post("/api/sim/open",auth,adminOnly,(req,res)=>{
+  const sim=simulationFor(req.user.id);if(sim.openedAt&&!sim.closedAt)return res.status(409).json({error:"La simulazione è già aperta."});
+  sim.openedAt=new Date().toISOString();sim.closedAt=null;sim.sales=[];sim.nextSaleId=1;res.status(201).json({ok:true});
+});
+app.post("/api/sim/sales",auth,adminOnly,(req,res)=>{
+  const sim=simulationFor(req.user.id);if(!sim.openedAt||sim.closedAt)return res.status(409).json({error:"Apri prima la cassa di simulazione."});
+  const {paymentMethod,items,cashReceived}=req.body||{};
+  if(!["Contanti","POS"].includes(paymentMethod)||!Array.isArray(items)||!items.length||items.length>100)return res.status(400).json({error:"Dati di vendita non validi."});
+  let total=0;const normalized=[];
+  for(const item of items){
+    const quantity=Number(item.quantity),discount=Number(item.discount||0);
+    if(!Number.isInteger(quantity)||quantity<1||quantity>999||!Number.isFinite(discount)||discount<0||discount>100)return res.status(400).json({error:"Quantità o sconto non validi."});
+    let p;if(item.code)p=productByCode.get(String(item.code));else if(item.ticket===true){const price=Number(item.price);if(!Number.isFinite(price)||price<=0||price>1000)return res.status(400).json({error:"Prezzo biglietto non valido."});p={name:"Biglietto Cinema",price};}
+    if(!p)return res.status(400).json({error:"Prodotto non valido."});
+    total+=Number(p.price)*quantity*(1-discount/100);normalized.push({name:p.name,quantity,price:Number(p.price),discount});
+  }
+  total=Math.round((total+Number.EPSILON)*100)/100;
+  if(paymentMethod==="Contanti"&&(!Number.isFinite(Number(cashReceived))||Number(cashReceived)<total))return res.status(400).json({error:"Contanti insufficienti o non validi."});
+  sim.sales.push({id:sim.nextSaleId++,created_at:new Date().toISOString(),payment_method:paymentMethod,total,items:normalized});
+  res.json({ok:true,total,change:paymentMethod==="Contanti"?Math.round((Number(cashReceived)-total+Number.EPSILON)*100)/100:0});
+});
+app.post("/api/sim/close",auth,adminOnly,(req,res)=>{
+  const sim=simulationFor(req.user.id);if(!sim.openedAt||sim.closedAt)return res.status(409).json({error:"Nessuna cassa di simulazione aperta."});
+  sim.closedAt=new Date().toISOString();res.json({ok:true});
+});
+
+
 app.post("/api/login", loginLimiter, async (req, res, next) => {
   try {
     const username = String(req.body.username || "").trim().toLowerCase();
@@ -603,6 +642,18 @@ app.patch("/api/admin/users/:id", auth, adminOnly, async (req, res, next) => {
     res.json({ ok: true });
   } catch (err) { next(err); }
 });
+
+app.delete("/api/admin/users/:id",auth,adminOnly,async(req,res,next)=>{
+ try{
+  const id=Number(req.params.id);if(!Number.isSafeInteger(id)||id<1)return res.status(400).json({error:"Account non valido."});
+  if(id===req.user.id)return res.status(400).json({error:"Non puoi eliminare l'account che stai usando."});
+  const refs=await pool.query("SELECT EXISTS(SELECT 1 FROM sales WHERE user_id=$1) OR EXISTS(SELECT 1 FROM cash_sessions WHERE opened_by=$1 OR closed_by=$1) AS has_history",[id]);
+  if(refs.rows[0]?.has_history)return res.status(409).json({error:"Account con attività nello storico: disattivalo per conservare la tracciabilità."});
+  const r=await pool.query("DELETE FROM app_users WHERE id=$1 RETURNING id",[id]);if(!r.rowCount)return res.status(404).json({error:"Account non trovato."});
+  res.json({ok:true});
+ }catch(err){next(err);}
+});
+
 app.get("/api/admin/cash-sessions", auth, adminOnly, async (req, res, next) => {
   try {
     const r = await pool.query(`
