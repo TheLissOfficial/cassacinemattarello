@@ -23,10 +23,8 @@ async function start() {
     $("loginOverlay").classList.add("hidden");
     $("posContainer").classList.remove("hidden");
     $("currentUser").textContent = `👤 ${currentUser.username} (${currentUser.role})`;
-    if (currentUser.role === "admin") {
-      $("closeCash").classList.remove("hidden");
-      $("openAdmin").classList.remove("hidden");
-    }
+    $("closeCash").classList.remove("hidden");
+    if (currentUser.role === "admin") $("openAdmin").classList.remove("hidden");
     products = (await api("/api/products")).products;
     renderProducts();
     await refreshCash();
@@ -142,7 +140,7 @@ async function loadReports() {
   try {
     const data = await api("/api/reports");
     panel.innerHTML = data.cashSessions.length ? data.cashSessions.map(c =>
-      `<div class="report-row"><span><b>Cassa #${c.id}</b> · ${c.closed_at ? "Chiusa" : "Aperta"} · ${money(c.revenue)} · ${c.transactions} vendite</span><span><button class="btn-action" data-sales="${c.id}">Transazioni</button> <button class="btn-action" data-pdf-id="${c.id}">Scarica PDF</button> ${currentUser.role === "admin" ? `<button class="btn-action" data-report-id="${c.id}">Scarica CSV</button> ${c.closed_at ? `<button class="btn-danger" data-delete-report="${c.id}">Elimina</button>` : ""}` : ""}</span></div><div id="sales-${c.id}" class="sale-list hidden"></div>`
+      `<div class="report-row"><span><b>Cassa #${c.id}</b> · ${c.closed_at ? "Chiusa" : "Aperta"} · Aperta da: ${esc(c.opened_by_name || "Non registrato")} · Chiusa da: ${esc(c.closed_by_name || "—")} · Apertura: ${new Date(c.opened_at).toLocaleString("it-IT")} · ${money(c.revenue)} · ${c.transactions} vendite</span><span><button class="btn-action" data-sales="${c.id}">Transazioni</button> <button class="btn-action" data-pdf-id="${c.id}">Scarica PDF</button> ${currentUser.role === "admin" ? `<button class="btn-action" data-report-id="${c.id}">Scarica CSV</button> ${c.closed_at ? `<button class="btn-danger" data-delete-report="${c.id}">Elimina</button>` : ""}` : ""}</span></div><div id="sales-${c.id}" class="sale-list hidden"></div>`
     ).join("") : "Nessun resoconto disponibile.";
   } catch (err) { panel.textContent = err.message; }
 }
@@ -207,7 +205,7 @@ async function refreshAdmin() {
     <div class="admin-row"><span><b>${esc(u.username)}</b> · ${esc(u.role)} · ${u.active ? "Attivo" : "Disattivato"}</span>
     <button class="btn-danger" data-user-id="${u.id}" data-active="${u.active ? "false":"true"}">${u.active ? "Disattiva":"Riattiva"}</button></div>`).join("");
   $("adminCashSessions").innerHTML = cashData.cashSessions.map(c => `
-    <div class="admin-row"><span><b>Cassa #${c.id}</b> · ${c.closed_at ? "Chiusa" : "Aperta"} · ${money(c.revenue)} · ${c.transactions} transazioni</span>
+    <div class="admin-row"><span><b>Cassa #${c.id}</b> · ${c.closed_at ? "Chiusa" : "Aperta"} · Aperta da: ${esc(c.opened_by_name || "Non registrato")} · Chiusa da: ${esc(c.closed_by_name || "—")} · ${money(c.revenue)} · ${c.transactions} transazioni</span>
     ${c.closed_at ? "" : `<button class="btn-danger" data-cash-id="${c.id}">Chiudi cassa</button>`}</div>`).join("");
 }
 $("newUserForm").addEventListener("submit", async e => {
