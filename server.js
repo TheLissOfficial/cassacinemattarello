@@ -85,7 +85,7 @@ async function initDb() {
       id BIGSERIAL PRIMARY KEY,
       username TEXT UNIQUE NOT NULL,
       password_hash TEXT NOT NULL,
-      role TEXT NOT NULL CHECK (role IN ('admin','operatore')),
+      role TEXT NOT NULL CHECK (role IN ('admin','operatore','resocontista')),
       active BOOLEAN NOT NULL DEFAULT TRUE,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
@@ -122,6 +122,8 @@ async function initDb() {
       unit_price NUMERIC(12,2) NOT NULL,
       discount_percent NUMERIC(5,2) NOT NULL DEFAULT 0
     );
+    ALTER TABLE app_users DROP CONSTRAINT IF EXISTS app_users_role_check;
+    ALTER TABLE app_users ADD CONSTRAINT app_users_role_check CHECK (role IN ('admin','operatore','resocontista'));
     ALTER TABLE sales ADD COLUMN IF NOT EXISTS voided_at TIMESTAMPTZ;
     ALTER TABLE sales ADD COLUMN IF NOT EXISTS voided_by BIGINT REFERENCES app_users(id);
     ALTER TABLE sales ADD COLUMN IF NOT EXISTS void_reason TEXT;
@@ -178,6 +180,11 @@ function adminOnly(req, res, next) {
   if (req.user.role !== "admin") return res.status(403).json({ error: "Operazione riservata agli amministratori." });
   next();
 }
+function cashierOnly(req, res, next) {
+  if (req.user.role === "resocontista") return res.status(403).json({ error: "Il ruolo Resocontista è in sola lettura." });
+  next();
+}
+function reportReader(req, res, next) { next(); }
 async function activeCashSession(client = pool) {
   const r = await client.query("SELECT * FROM cash_sessions WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1");
   if (r.rowCount) return r.rows[0];
@@ -215,9 +222,9 @@ app.post("/api/logout", async (req, res, next) => {
 });
 
 app.get("/api/me", auth, (req, res) => res.json({ user: { username: req.user.username, role: req.user.role } }));
-app.get("/api/products", auth, (req, res) => res.json({ products }));
+app.get("/api/products", auth, cashierOnly, (req, res) => res.json({ products }));
 
-app.get("/api/ranking", auth, async (req, res, next) => {
+app.get("/api/ranking", auth, cashierOnly, async (req, res, next) => {
   try {
     const r = await pool.query(`
       SELECT product_code AS code, product_name AS name, SUM(quantity)::int AS quantity
@@ -231,7 +238,7 @@ app.get("/api/ranking", auth, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-app.get("/api/sales/current", auth, async (req, res, next) => {
+app.get("/api/sales/current", auth, cashierOnly, async (req, res, next) => {
   try {
     let cash = await activeCashSession();
     const assigned = await pool.query("UPDATE cash_sessions SET opened_by=COALESCE(opened_by,$2) WHERE id=$1 RETURNING *", [cash.id, req.user.id]);
@@ -253,7 +260,7 @@ app.get("/api/sales/current", auth, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-app.post("/api/sales", auth, async (req, res, next) => {
+app.post("/api/sales", auth, cashierOnly, async (req, res, next) => {
   const client = await pool.connect();
   try {
     const { paymentMethod, items, cashReceived } = req.body || {};
@@ -310,7 +317,7 @@ app.post("/api/sales", auth, async (req, res, next) => {
   } finally { client.release(); }
 });
 
-app.post("/api/cash/close/:id", auth, async (req, res, next) => {
+app.post("/api/cash/close/:id", auth, cashierOnly, async (req, res, next) => {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -344,7 +351,7 @@ app.get("/api/reports", auth, async (req, res, next) => {
     const params = [];
     let where = "";
     let salesJoin = "LEFT JOIN sales s ON s.cash_session_id=c.id";
-    if (req.user.role !== "admin") {
+    if (req.user.role === "operatore") {
       params.push(req.user.id);
       salesJoin = "LEFT JOIN sales s ON s.cash_session_id=c.id AND s.user_id=$1";
       where = "WHERE EXISTS (SELECT 1 FROM sales sx WHERE sx.cash_session_id=c.id AND sx.user_id=$1)";
@@ -372,12 +379,12 @@ app.get("/api/reports/:id/sales", auth, async (req, res, next) => {
     if (!Number.isSafeInteger(id) || id < 1) return res.status(400).json({ error: "Cassa non valida." });
     const params = [id];
     let own = "";
-    if (req.user.role !== "admin") { params.push(req.user.id); own = "AND s.user_id=$2"; }
+    if (req.user.role === "operatore") { params.push(req.user.id); own = "AND s.user_id=$2"; }
     const r = await pool.query("SELECT s.id,s.created_at,s.total,s.payment_method,s.voided_at,s.void_reason,u.username, COALESCE(string_agg(si.product_name || ' × ' || si.quantity, ', ' ORDER BY si.id), '') AS items FROM sales s JOIN app_users u ON u.id=s.user_id LEFT JOIN sale_items si ON si.sale_id=s.id WHERE s.cash_session_id=$1 " + own + " GROUP BY s.id,u.username ORDER BY s.created_at DESC", params);
     res.json({ sales: r.rows });
   } catch (err) { next(err); }
 });
-app.post("/api/sales/:id/void", auth, async (req, res, next) => {
+app.post("/api/sales/:id/void", auth, cashierOnly, async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isSafeInteger(id) || id < 1) return res.status(400).json({ error: "Transazione non valida." });
@@ -394,7 +401,7 @@ app.get("/api/reports/:id.pdf", auth, async (req, res, next) => {
     if (!Number.isSafeInteger(id) || id < 1) return res.status(400).json({ error: "Cassa non valida." });
     const params = [id];
     let ownerFilter = "";
-    if (req.user.role !== "admin") { params.push(req.user.id); ownerFilter = "AND s.user_id=$2"; }
+    if (req.user.role === "operatore") { params.push(req.user.id); ownerFilter = "AND s.user_id=$2"; }
     const session = await pool.query("SELECT c.id,c.opened_at,c.closed_at,c.opening_fund,c.closing_cash,c.closing_pos,opener.username AS opened_by_name,closer.username AS closed_by_name FROM cash_sessions c LEFT JOIN app_users opener ON opener.id=c.opened_by LEFT JOIN app_users closer ON closer.id=c.closed_by WHERE c.id=$1", [id]);
     if (!session.rowCount) return res.status(404).json({ error: "Cassa non trovata." });
     const rows = await pool.query(`
@@ -405,53 +412,103 @@ app.get("/api/reports/:id.pdf", auth, async (req, res, next) => {
       WHERE s.cash_session_id=$1 ${ownerFilter}
       GROUP BY s.id,u.username ORDER BY s.created_at,s.id
     `, params);
-    const doc = new PDFDocument({ size: "A4", margin: 42 });
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `attachment; filename="resoconto-cassa-${id}.pdf"`);
-    doc.pipe(res);
     const cash = session.rows[0];
-    const euro = value => "EUR " + Number(value || 0).toFixed(2);
-    doc.fontSize(18).text("Resoconto cassa #" + id);
-    doc.moveDown(0.4).fontSize(10).text("Apertura: " + new Date(cash.opened_at).toLocaleString("it-IT"));
-    doc.text("Cassiere in apertura: " + (cash.opened_by_name || "Non registrato"));
-    doc.text("Chiusura: " + (cash.closed_at ? new Date(cash.closed_at).toLocaleString("it-IT") : "Aperta"));
-    doc.text("Cassiere in chiusura: " + (cash.closed_by_name || "—"));
-    doc.text("Fondo iniziale: " + euro(cash.opening_fund));
-    if (req.user.role === "admin") {
-      doc.text("Contanti a chiusura: " + euro(cash.closing_cash));
-      doc.text("POS a chiusura: " + euro(cash.closing_pos));
+    const valid = rows.rows.filter(x => !x.voided_at);
+    const total = valid.reduce((sum,x) => sum + Number(x.total),0);
+    const byCashier = new Map();
+    for (const sale of valid) {
+      const v = byCashier.get(sale.username) || {count:0,total:0};
+      v.count++; v.total += Number(sale.total); byCashier.set(sale.username,v);
     }
-    doc.moveDown().fontSize(12).text("Vendite", { underline: true });
-    doc.moveDown(0.4).fontSize(9);
-    let total = 0;
-    const cashierTotals = new Map();
-    for (const sale of rows.rows) {
-      if (doc.y > 735) doc.addPage();
-      if (!sale.voided_at) {
-        total += Number(sale.total);
-        const entry = cashierTotals.get(sale.username) || { count: 0, total: 0 };
-        entry.count += 1; entry.total += Number(sale.total); cashierTotals.set(sale.username, entry);
-      }
-      doc.font("Helvetica-Bold").text("#" + sale.id + " · " + new Date(sale.created_at).toLocaleString("it-IT") + " · " + sale.payment_method + " · " + euro(sale.total));
-      doc.font("Helvetica").text("Cassiere: " + sale.username);
-      if (sale.voided_at) doc.text("STORNATA il " + new Date(sale.voided_at).toLocaleString("it-IT") + " · Motivo: " + (sale.void_reason || "—"));
-      if (sale.items) doc.text("Articoli: " + sale.items);
-      doc.moveDown(0.45);
+    const euro = value => new Intl.NumberFormat("it-IT",{style:"currency",currency:"EUR"}).format(Number(value || 0));
+    const date = value => value ? new Date(value).toLocaleString("it-IT") : "—";
+    const doc = new PDFDocument({size:"A4",margin:44,bufferPages:true,info:{Title:"Resoconto cassa #"+id,Author:"Cinematta POS"}});
+    res.setHeader("Content-Type","application/pdf");
+    res.setHeader("Content-Disposition",`attachment; filename="resoconto-cassa-${id}.pdf"`);
+    doc.pipe(res);
+    const left=44, right=551, width=507;
+    const rule=(y)=>{doc.moveTo(left,y).lineTo(right,y).lineWidth(.7).strokeColor("#D7DEE8").stroke();};
+    const section=(label)=>{
+      if(doc.y>700) doc.addPage();
+      doc.moveDown(.5); doc.font("Helvetica-Bold").fontSize(11).fillColor("#183153").text(label.toUpperCase(),left,doc.y,{width});
+      const y=doc.y+5; rule(y); doc.y=y+12;
+    };
+    const header=()=>{
+      doc.save();
+      doc.rect(0,0,595,92).fill("#14243A");
+      doc.fillColor("#FFFFFF").font("Helvetica-Bold").fontSize(19).text("CINEMATTA",left,24);
+      doc.font("Helvetica").fontSize(9).fillColor("#D8E3F0").text("REPORT CASSA  ·  DOCUMENTO DI RIEPILOGO",left,52);
+      doc.font("Helvetica-Bold").fontSize(17).fillColor("#FFFFFF").text("#"+id,460,32,{width:90,align:"right"});
+      doc.restore();
+      doc.y=112;
+    };
+    header();
+    doc.fillColor("#17243A").font("Helvetica-Bold").fontSize(16).text("Resoconto della cassa");
+    doc.moveDown(.2).fillColor("#66758A").font("Helvetica").fontSize(9).text("Generato il "+date(new Date()));
+    section("Dati della sessione");
+    const meta=[
+      ["Apertura",date(cash.opened_at)],["Cassiere apertura",cash.opened_by_name||"Non registrato"],
+      ["Chiusura",cash.closed_at?date(cash.closed_at):"Sessione ancora aperta"],["Cassiere chiusura",cash.closed_by_name||"—"],
+      ["Fondo iniziale",euro(cash.opening_fund)]
+    ];
+    if(req.user.role!=="operatore") meta.push(["Contanti a chiusura",euro(cash.closing_cash)],["POS a chiusura",euro(cash.closing_pos)]);
+    meta.forEach((item,i)=>{
+      const col=i%2, row=Math.floor(i/2), x=left+col*258, y=doc.y+row*39;
+      doc.roundedRect(x,y,246,32,4).fill("#F1F5F9");
+      doc.fillColor("#68778B").font("Helvetica").fontSize(7.5).text(item[0].toUpperCase(),x+9,y+5,{width:225});
+      doc.fillColor("#17243A").font("Helvetica-Bold").fontSize(9).text(item[1],x+9,y+16,{width:225});
+    });
+    doc.y += Math.ceil(meta.length/2)*39+5;
+    section("Riepilogo economico");
+    const stats=[["Transazioni valide",String(valid.length)],["Transazioni annullate",String(rows.rows.length-valid.length)],["Incasso valido",euro(total)]];
+    const statW=width/3;
+    stats.forEach((v,i)=>{
+      const x=left+i*statW;
+      doc.roundedRect(x+2,doc.y,statW-8,48,4).fill("#EAF0F7");
+      doc.fillColor("#65758A").font("Helvetica").fontSize(7.5).text(v[0].toUpperCase(),x+10,doc.y+8,{width:statW-20});
+      doc.fillColor("#183153").font("Helvetica-Bold").fontSize(i===2?12:13).text(v[1],x+10,doc.y+23,{width:statW-20});
+    });
+    doc.y+=60;
+    section("Riepilogo per cassiere");
+    if(!byCashier.size) doc.font("Helvetica").fontSize(9).fillColor("#596579").text("Nessuna transazione valida.");
+    for(const [username,v] of byCashier){
+      doc.font("Helvetica-Bold").fontSize(9).fillColor("#17243A").text(username,left,doc.y,{continued:true});
+      doc.font("Helvetica").fillColor("#596579").text("   ·   "+v.count+" transazioni   ·   "+euro(v.total));
     }
-    doc.moveDown(0.5).font("Helvetica-Bold").fontSize(11).text("Riepilogo per cassiere");
-    for (const [username, value] of cashierTotals) doc.font("Helvetica").fontSize(9).text(username + " · " + value.count + " transazioni valide · " + euro(value.total));
-    doc.moveDown().font("Helvetica-Bold").fontSize(12).text("Totale vendite valide: " + euro(total));
+    section("Dettaglio transazioni");
+    if(!rows.rows.length) doc.font("Helvetica").fontSize(9).fillColor("#596579").text("Nessuna transazione registrata.");
+    for(const sale of rows.rows){
+      const detail=(sale.items||"Articoli non disponibili");
+      const estimated=78+doc.heightOfString(detail,{width:width-18,fontSize:8.2})+((sale.voided_at)?24:0);
+      if(doc.y+estimated>745) doc.addPage();
+      const y=doc.y;
+      doc.roundedRect(left,y,width,Math.min(estimated,180),4).fill(sale.voided_at?"#FFF1F0":"#F4F7FA");
+      doc.fillColor("#17243A").font("Helvetica-Bold").fontSize(9).text("Vendita #"+sale.id,left+10,y+8,{width:150});
+      doc.font("Helvetica").fontSize(8).fillColor("#4E5D70").text(date(sale.created_at)+"   ·   "+sale.payment_method,left+155,y+8,{width:width-175,align:"right"});
+      doc.fillColor("#17243A").font("Helvetica-Bold").fontSize(9).text(euro(sale.total),left+10,y+24,{width:width-20,align:"right"});
+      doc.font("Helvetica").fontSize(8.2).fillColor("#35445A").text("Cassiere: "+sale.username,left+10,y+25,{width:width-100});
+      doc.font("Helvetica").fontSize(8.2).fillColor("#35445A").text("Articoli: "+detail,left+10,y+43,{width:width-20});
+      if(sale.voided_at) doc.font("Helvetica-Bold").fontSize(7.8).fillColor("#A83232").text("ANNULLATA · "+date(sale.voided_at)+" · Motivo: "+(sale.void_reason||"—"),left+10,doc.y+4,{width:width-20});
+      doc.y=y+estimated+7;
+    }
+    const range=doc.bufferedPageRange();
+    for(let i=0;i<range.count;i++){
+      doc.switchToPage(range.start+i);
+      if(i>0){doc.save();doc.rect(0,0,595,48).fill("#14243A");doc.fillColor("#FFFFFF").font("Helvetica-Bold").fontSize(10).text("CINEMATTA  ·  RESOCONTO CASSA #"+id,left,18);doc.restore();}
+      doc.moveTo(left,780).lineTo(right,780).lineWidth(.6).strokeColor("#D7DEE8").stroke();
+      doc.fillColor("#778397").font("Helvetica").fontSize(8).text("Documento gestionale · Cassa #"+id,left,788,{width:330});
+      doc.text("Pagina "+(i+1)+" di "+range.count,left+350,788,{width:157,align:"right"});
+    }
     doc.end();
-  } catch (err) { next(err); }
+  } catch(err) { next(err); }
 });
-
-app.get("/api/reports/:id.csv", auth, adminOnly, async (req, res, next) => {
+app.get("/api/reports/:id.csv", auth, async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isSafeInteger(id) || id < 1) return res.status(400).json({ error: "Cassa non valida." });
     const params = [id];
     let ownerFilter = "";
-    if (req.user.role !== "admin") {
+    if (req.user.role === "operatore") {
       params.push(req.user.id);
       ownerFilter = "AND s.user_id=$2";
     }
@@ -507,7 +564,7 @@ app.post("/api/admin/users", auth, adminOnly, async (req, res, next) => {
   try {
     const username = String(req.body.username || "").trim().toLowerCase();
     const password = String(req.body.password || "");
-    const role = req.body.role === "admin" ? "admin" : "operatore";
+    const role = ["admin","operatore","resocontista"].includes(req.body.role) ? req.body.role : "operatore";
     if (!/^[a-z0-9._-]{3,32}$/.test(username)) return res.status(400).json({ error: "Username: 3-32 caratteri, lettere, numeri, punto, trattino o underscore." });
     if (password.length < 12) return res.status(400).json({ error: "La password deve avere almeno 12 caratteri." });
     const hash = await bcrypt.hash(password, 12);
