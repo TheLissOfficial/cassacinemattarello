@@ -310,7 +310,7 @@ $("adminCashSessions").addEventListener("click", async e => {
 async function toggleSimulation(){
  if(currentUser?.role!=="admin")return;
  if(!simulationMode){if(!confirm("Avviare la simulazione? Le vendite saranno temporanee e non entreranno in resoconti o classifiche."))return;simulationMode=true;cart=[];renderCart();$("simulationBanner").classList.remove("hidden");$("simulationToggle").textContent="Esci dalla simulazione";$("simulationToggleClosed").textContent="Esci dalla simulazione";await api("/api/sim/current");await refreshCash();}
- else{if(!confirm("Uscire dalla simulazione? Tutte le vendite simulate verranno scartate."))return;simulationMode=false;cart=[];renderCart();$("simulationBanner").classList.add("hidden");$("simulationToggle").textContent="Avvia simulazione";$("simulationToggleClosed").textContent="Avvia simulazione";await refreshCash();}
+ else{if(!confirm("Uscire dalla simulazione? Tutte le vendite simulate verranno scartate."))return;await api("/api/sim/reset",{method:"POST",body:"{}"});simulationMode=false;cart=[];renderCart();$("simulationBanner").classList.add("hidden");$("simulationToggle").textContent="Avvia simulazione";$("simulationToggleClosed").textContent="Avvia simulazione";await refreshCash();}
 }
 $("simulationToggle").onclick=toggleSimulation;
 $("simulationToggleClosed").onclick=toggleSimulation;
