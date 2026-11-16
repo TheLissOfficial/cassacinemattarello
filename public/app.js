@@ -136,35 +136,30 @@ async function refreshCash() {
   $("sessionTotal").textContent = `Incasso cassa: ${money(data.totals.revenue)}`;
   $("salesStatsList").innerHTML = data.items.length ? data.items.map(x => `<div>• ${x.quantity} di ${esc(x.name)}</div>`).join("") : "Nessuna vendita effettuata.";
 }
-$("showReports").onclick = async () => {
+async function loadReports() {
   const panel = $("reportsPanel");
-  panel.classList.toggle("hidden");
-  if (panel.classList.contains("hidden")) return;
   panel.textContent = "Caricamento resoconti...";
   try {
     const data = await api("/api/reports");
     panel.innerHTML = data.cashSessions.length ? data.cashSessions.map(c =>
-      `<div class="report-row"><span><b>Cassa #${c.id}</b> · ${c.closed_at ? "Chiusa" : "Aperta"} · ${money(c.revenue)} · ${c.transactions} vendite</span><button class="btn-action" data-report-id="${c.id}">Scarica CSV</button></div>`
+      `<div class="report-row"><span><b>Cassa #${c.id}</b> · ${c.closed_at ? "Chiusa" : "Aperta"} · ${money(c.revenue)} · ${c.transactions} vendite</span><span><button class="btn-action" data-sales="${c.id}">Transazioni</button> <button class="btn-action" data-report-id="${c.id}">Scarica CSV</button></span></div><div id="sales-${c.id}" class="sale-list hidden"></div>`
     ).join("") : "Nessun resoconto disponibile.";
   } catch (err) { panel.textContent = err.message; }
-};
+}
+$("showReports").onclick = async () => { const p=$("reportsPanel"); p.classList.toggle("hidden"); if(!p.classList.contains("hidden")) await loadReports(); };
 $("reportsPanel").addEventListener("click", async e => {
-  const b = e.target.closest("button[data-report-id]");
-  if (!b) return;
-  try {
-    const response = await fetch(API_BASE + "/api/reports/" + b.dataset.reportId + ".csv", {
-      headers: authToken ? { Authorization:"Bearer " + authToken } : {}
-    });
-    if (!response.ok) {
-      const data = await response.json().catch(() => ({}));
-      throw new Error(data.error || "Download non riuscito.");
-    }
-    const blob = await response.blob();
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url; link.download = "resoconto-cassa-" + b.dataset.reportId + ".csv";
-    document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url);
-  } catch (err) { alert(err.message); }
+  const show=e.target.closest("button[data-sales]");
+  const cancel=e.target.closest("button[data-void-sale]");
+  const download=e.target.closest("button[data-report-id]");
+  if(show) {
+    const id=show.dataset.sales, box=$("sales-"+id); box.classList.toggle("hidden"); if(box.classList.contains("hidden")) return;
+    try { const d=await api("/api/reports/"+id+"/sales"); box.innerHTML=d.sales.length ? d.sales.map(x=>`<div class="sale-row"><span><b>Vendita #${x.id}</b> · ${new Date(x.created_at).toLocaleString("it-IT")} · ${esc(x.username)} · ${money(x.total)}<br><small>${esc(x.items||"")}${x.voided_at?" · ANNULLATA":""}</small></span>${x.voided_at?"":`<button class="btn-danger" data-void-sale="${x.id}">Annulla</button>`}</div>`).join("") : "Nessuna vendita."; } catch(err) { box.textContent=err.message; }
+    return;
+  }
+  if(cancel) { if(!confirm("Annullare questa vendita? Sarà esclusa da incassi e classifica.")) return; const reason=prompt("Motivo (facoltativo):")||"Annullata"; try { await api("/api/sales/"+cancel.dataset.voidSale+"/void",{method:"POST",body:JSON.stringify({reason})}); await loadReports(); await refreshCash(); } catch(err) { alert(err.message); } return; }
+  if(download) {
+    try { const response=await fetch(API_BASE+"/api/reports/"+download.dataset.reportId+".csv",{headers:authToken?{Authorization:"Bearer "+authToken}:{}}); if(!response.ok) throw new Error("Download non riuscito."); const blob=await response.blob(); const url=URL.createObjectURL(blob); const link=document.createElement("a"); link.href=url; link.download="resoconto-cassa-"+download.dataset.reportId+".csv"; document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url); } catch(err) { alert(err.message); }
+  }
 });
 $("showRanking").onclick = async () => {
   const panel = $("rankingPanel");
