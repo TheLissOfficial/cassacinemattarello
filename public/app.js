@@ -2,11 +2,13 @@ let products = [];
 let cart = [];
 let discountIndex = null;
 let currentUser = null;
+const API_BASE = "https://cassacinemattarello.onrender.com";
 const $ = id => document.getElementById(id);
+let authToken = localStorage.getItem("cinematta_token") || "";
 const money = n => new Intl.NumberFormat("it-IT", { style:"currency", currency:"EUR" }).format(Number(n || 0));
 const esc = value => String(value).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
 async function api(url, options={}) {
-  const response = await fetch(url, { credentials:"same-origin", headers:{ "Content-Type":"application/json", ...(options.headers||{}) }, ...options });
+  const response = await fetch(API_BASE + url, { ...options, credentials:"omit", headers:{ "Content-Type":"application/json", ...(authToken ? { Authorization:"Bearer " + authToken } : {}), ...(options.headers||{}) } });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || "Errore nella richiesta.");
   return data;
@@ -37,12 +39,14 @@ $("loginForm").addEventListener("submit", async e => {
   e.preventDefault();
   $("loginError").textContent = "";
   try {
-    await api("/api/login", { method:"POST", body:JSON.stringify({ username:$("loginUser").value, password:$("loginPass").value }) });
+    const login = await api("/api/login", { method:"POST", body:JSON.stringify({ username:$("loginUser").value, password:$("loginPass").value }) });
+    authToken = login.token;
+    localStorage.setItem("cinematta_token", authToken);
     $("loginPass").value = "";
     await start();
   } catch (err) { $("loginError").textContent = err.message; }
 });
-$("logout").onclick = async () => { await api("/api/logout", { method:"POST", body:"{}" }); location.reload(); };
+$("logout").onclick = async () => { try { await api("/api/logout", { method:"POST", body:"{}" }); } finally { authToken = ""; localStorage.removeItem("cinematta_token"); location.reload(); } };
 
 function renderProducts() {
   const grid = $("productGrid");
@@ -132,6 +136,36 @@ async function refreshCash() {
   $("sessionTotal").textContent = `Incasso cassa: ${money(data.totals.revenue)}`;
   $("salesStatsList").innerHTML = data.items.length ? data.items.map(x => `<div>• ${x.quantity} di ${esc(x.name)}</div>`).join("") : "Nessuna vendita effettuata.";
 }
+$("showReports").onclick = async () => {
+  const panel = $("reportsPanel");
+  panel.classList.toggle("hidden");
+  if (panel.classList.contains("hidden")) return;
+  panel.textContent = "Caricamento resoconti...";
+  try {
+    const data = await api("/api/reports");
+    panel.innerHTML = data.cashSessions.length ? data.cashSessions.map(c =>
+      `<div class="report-row"><span><b>Cassa #${c.id}</b> · ${c.closed_at ? "Chiusa" : "Aperta"} · ${money(c.revenue)} · ${c.transactions} vendite</span><button class="btn-action" data-report-id="${c.id}">Scarica CSV</button></div>`
+    ).join("") : "Nessun resoconto disponibile.";
+  } catch (err) { panel.textContent = err.message; }
+};
+$("reportsPanel").addEventListener("click", async e => {
+  const b = e.target.closest("button[data-report-id]");
+  if (!b) return;
+  try {
+    const response = await fetch(API_BASE + "/api/reports/" + b.dataset.reportId + ".csv", {
+      headers: authToken ? { Authorization:"Bearer " + authToken } : {}
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || "Download non riuscito.");
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url; link.download = "resoconto-cassa-" + b.dataset.reportId + ".csv";
+    document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url);
+  } catch (err) { alert(err.message); }
+});
 $("showRanking").onclick = async () => {
   const panel = $("rankingPanel");
   panel.classList.toggle("hidden");
