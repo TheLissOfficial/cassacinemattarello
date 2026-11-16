@@ -142,7 +142,7 @@ async function loadReports() {
   try {
     const data = await api("/api/reports");
     panel.innerHTML = data.cashSessions.length ? data.cashSessions.map(c =>
-      `<div class="report-row"><span><b>Cassa #${c.id}</b> · ${c.closed_at ? "Chiusa" : "Aperta"} · ${money(c.revenue)} · ${c.transactions} vendite</span><span><button class="btn-action" data-sales="${c.id}">Transazioni</button> <button class="btn-action" data-pdf-id="${c.id}">Scarica PDF</button> ${currentUser.role === "admin" ? `<button class="btn-action" data-report-id="${c.id}">Scarica CSV</button> <button class="btn-danger" data-delete-report="${c.id}">Elimina</button>` : ""}</span></div><div id="sales-${c.id}" class="sale-list hidden"></div>`
+      `<div class="report-row"><span><b>Cassa #${c.id}</b> · ${c.closed_at ? "Chiusa" : "Aperta"} · ${money(c.revenue)} · ${c.transactions} vendite</span><span><button class="btn-action" data-sales="${c.id}">Transazioni</button> <button class="btn-action" data-pdf-id="${c.id}">Scarica PDF</button> ${currentUser.role === "admin" ? `<button class="btn-action" data-report-id="${c.id}">Scarica CSV</button> ${c.closed_at ? `<button class="btn-danger" data-delete-report="${c.id}">Elimina</button>` : ""}` : ""}</span></div><div id="sales-${c.id}" class="sale-list hidden"></div>`
     ).join("") : "Nessun resoconto disponibile.";
   } catch (err) { panel.textContent = err.message; }
 }
