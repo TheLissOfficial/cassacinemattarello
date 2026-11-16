@@ -5,9 +5,11 @@ let currentUser = null;
 const API_BASE = "https://cassacinemattarello.onrender.com";
 const $ = id => document.getElementById(id);
 let authToken = localStorage.getItem("cinematta_token") || "";
+let simulationMode = false;
 const money = n => new Intl.NumberFormat("it-IT", { style:"currency", currency:"EUR" }).format(Number(n || 0));
 const esc = value => String(value).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
 async function api(url, options={}) {
+  if (simulationMode) { if(url === "/api/sales/current") url="/api/sim/current"; else if(url === "/api/cash/open") url="/api/sim/open"; else if(url === "/api/sales") url="/api/sim/sales"; else if(url.startsWith("/api/cash/close/")) url="/api/sim/close"; }
   const response = await fetch(API_BASE + url, { ...options, credentials:"omit", headers:{ "Content-Type":"application/json", ...(authToken ? { Authorization:"Bearer " + authToken } : {}), ...(options.headers||{}) } });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || "Errore nella richiesta.");
@@ -24,6 +26,9 @@ async function start() {
     $("posContainer").classList.remove("hidden");
     $("currentUser").textContent = `👤 ${currentUser.username} (${currentUser.role === "resocontista" ? "Resocontista" : currentUser.role})`;
     const reportOnly = currentUser.role === "resocontista";
+    simulationMode=false;
+    $("simulationToggle").classList.toggle("hidden",currentUser.role!=="admin");
+    $("simulationToggleClosed").classList.toggle("hidden",currentUser.role!=="admin");
     document.body.classList.toggle("report-view", reportOnly);
     $("showReports").classList.remove("hidden");
     if (reportOnly) {
@@ -176,7 +181,7 @@ $("reportsPanel").addEventListener("click", async e => {
   const deleteReport=e.target.closest("button[data-delete-report]");
   if(show) {
     const id=show.dataset.sales, box=$("sales-"+id); box.classList.toggle("hidden"); if(box.classList.contains("hidden")) return;
-    try { const d=await api("/api/reports/"+id+"/sales"); box.innerHTML=d.sales.length ? d.sales.map(x=>`<div class="sale-row"><span><b>Vendita #${x.id}</b> · ${new Date(x.created_at).toLocaleString("it-IT")} · ${esc(x.username)} · ${money(x.total)}<br><small>${esc(x.items||"")}${x.voided_at?" · ANNULLATA":""}</small></span>${x.voided_at || currentUser.role === "resocontista" ? "" : `<button class="btn-danger" data-void-sale="${x.id}">Annulla</button>`}</div>`).join("") : "Nessuna vendita."; } catch(err) { box.textContent=err.message; }
+    try { const d=await api("/api/reports/"+id+"/sales"); box.innerHTML=d.sales.length ? d.sales.map(x=>`<div class="sale-row"><span><b>${new Date(x.created_at).toLocaleString("it-IT")} · Vendita #${x.id}</b> · ${esc(x.username)} · ${money(x.total)}<br><small>${esc(x.items||"")}${x.voided_at?" · ANNULLATA":""}</small></span>${x.voided_at || currentUser.role === "resocontista" ? "" : `<button class="btn-danger" data-void-sale="${x.id}">Annulla</button>`}</div>`).join("") : "Nessuna vendita."; } catch(err) { box.textContent=err.message; }
     return;
   }
   if(cancel) { if(!confirm("Annullare questa vendita? Sarà esclusa da incassi e classifica.")) return; const reason=prompt("Motivo (facoltativo):")||"Annullata"; try { await api("/api/sales/"+cancel.dataset.voidSale+"/void",{method:"POST",body:JSON.stringify({reason})}); await loadReports(); await refreshCash(); } catch(err) { alert(err.message); } return; }
@@ -270,10 +275,10 @@ async function refreshAdmin() {
   const [usersData, cashData] = await Promise.all([api("/api/admin/users"), api("/api/admin/cash-sessions")]);
   $("adminUsers").innerHTML = usersData.users.map(u => `
     <div class="admin-row"><span><b>${esc(u.username)}</b> · ${esc(u.role)} · ${u.active ? "Attivo" : "Disattivato"}</span>
-    <button class="btn-danger" data-user-id="${u.id}" data-active="${u.active ? "false":"true"}">${u.active ? "Disattiva":"Riattiva"}</button></div>`).join("");
+    <span><button class="btn-danger" data-user-id="${u.id}" data-active="${u.active ? "false":"true"}">${u.active ? "Disattiva":"Riattiva"}</button> <button class="btn-danger" data-delete-user="${u.id}">Elimina</button></span></div>`).join("");
   $("adminCashSessions").innerHTML = cashData.cashSessions.map(c => `
     <div class="admin-row"><span><b>Cassa #${c.id}</b> · ${c.closed_at ? "Chiusa" : "Aperta"} · Aperta da: ${esc(c.opened_by_name || "Non registrato")} · Chiusa da: ${esc(c.closed_by_name || "—")} · ${money(c.revenue)} · ${c.transactions} transazioni</span>
-    ${c.closed_at ? "" : `<button class="btn-danger" data-cash-id="${c.id}">Chiudi cassa</button>`}</div>`).join("");
+    ${c.closed_at ? `<button class="btn-danger" data-delete-admin-cash="${c.id}">Elimina cassa</button>` : `<button class="btn-danger" data-cash-id="${c.id}">Chiudi cassa</button>`}</div>`).join("");
 }
 $("newUserForm").addEventListener("submit", async e => {
   e.preventDefault();
@@ -283,6 +288,8 @@ $("newUserForm").addEventListener("submit", async e => {
   } catch (err) { alert(err.message); }
 });
 $("adminUsers").addEventListener("click", async e => {
+  const del=e.target.closest("button[data-delete-user]");
+  if(del){if(!confirm("Eliminare definitivamente questo account? Se ha attività nello storico, il sistema impedirà l’eliminazione."))return;try{await api(`/api/admin/users/${del.dataset.deleteUser}`,{method:"DELETE"});await refreshAdmin();}catch(err){alert(err.message);}return;}
   const b = e.target.closest("button[data-user-id]");
   if (!b) return;
   try {
@@ -291,10 +298,21 @@ $("adminUsers").addEventListener("click", async e => {
   } catch (err) { alert(err.message); }
 });
 $("adminCashSessions").addEventListener("click", async e => {
+  const del=e.target.closest("button[data-delete-admin-cash]");
+  if(del){if(!confirm(`Eliminare definitivamente la cassa #${del.dataset.deleteAdminCash} e le vendite associate?`))return;try{await api(`/api/admin/reports/${del.dataset.deleteAdminCash}`,{method:"DELETE"});await refreshAdmin();}catch(err){alert(err.message);}return;}
   const b = e.target.closest("button[data-cash-id]");
   if (!b || !confirm(`Chiudere la cassa #${b.dataset.cashId}?`)) return;
   try { await api(`/api/cash/close/${b.dataset.cashId}`, { method:"POST", body:"{}" }); await refreshAdmin(); await refreshCash(); }
   catch (err) { alert(err.message); }
 });
+
+
+async function toggleSimulation(){
+ if(currentUser?.role!=="admin")return;
+ if(!simulationMode){if(!confirm("Avviare la simulazione? Le vendite saranno temporanee e non entreranno in resoconti o classifiche."))return;simulationMode=true;cart=[];renderCart();$("simulationBanner").classList.remove("hidden");$("simulationToggle").textContent="Esci dalla simulazione";$("simulationToggleClosed").textContent="Esci dalla simulazione";await api("/api/sim/current");await refreshCash();}
+ else{if(!confirm("Uscire dalla simulazione? Tutte le vendite simulate verranno scartate."))return;simulationMode=false;cart=[];renderCart();$("simulationBanner").classList.add("hidden");$("simulationToggle").textContent="Avvia simulazione";$("simulationToggleClosed").textContent="Avvia simulazione";await refreshCash();}
+}
+$("simulationToggle").onclick=toggleSimulation;
+$("simulationToggleClosed").onclick=toggleSimulation;
 
 start();
