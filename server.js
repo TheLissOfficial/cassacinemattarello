@@ -187,9 +187,7 @@ function cashierOnly(req, res, next) {
 function reportReader(req, res, next) { next(); }
 async function activeCashSession(client = pool) {
   const r = await client.query("SELECT * FROM cash_sessions WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1");
-  if (r.rowCount) return r.rows[0];
-  const created = await client.query("INSERT INTO cash_sessions(opening_fund) VALUES(250.00) RETURNING *");
-  return created.rows[0];
+  return r.rows[0] || null;
 }
 
 const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 12, standardHeaders: true, legacyHeaders: false });
@@ -240,12 +238,10 @@ app.get("/api/ranking", auth, cashierOnly, async (req, res, next) => {
 
 app.get("/api/sales/current", auth, cashierOnly, async (req, res, next) => {
   try {
-    let cash = await activeCashSession();
-    const assigned = await pool.query("UPDATE cash_sessions SET opened_by=COALESCE(opened_by,$2) WHERE id=$1 RETURNING *", [cash.id, req.user.id]);
-    cash = assigned.rows[0];
+    const cash = await activeCashSession();
+    if (!cash) return res.json({ cashSession: null, totals: { revenue: "0.00", cash: "0.00", pos: "0.00", transactions: 0 }, items: [] });
     const totals = await pool.query(`
-      SELECT
-        COALESCE(SUM(total),0)::numeric(12,2) AS revenue,
+      SELECT COALESCE(SUM(total),0)::numeric(12,2) AS revenue,
         COALESCE(SUM(total) FILTER (WHERE payment_method='Contanti'),0)::numeric(12,2) AS cash,
         COALESCE(SUM(total) FILTER (WHERE payment_method='POS'),0)::numeric(12,2) AS pos,
         COUNT(*)::int AS transactions
@@ -258,6 +254,25 @@ app.get("/api/sales/current", auth, cashierOnly, async (req, res, next) => {
     `, [cash.id]);
     res.json({ cashSession: cash, totals: totals.rows[0], items: items.rows });
   } catch (err) { next(err); }
+});
+
+app.post("/api/cash/open", auth, cashierOnly, async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock(72419381)");
+    const existing = await activeCashSession(client);
+    if (existing) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "Esiste già una cassa aperta (#" + existing.id + ")." });
+    }
+    const created = await client.query("INSERT INTO cash_sessions(opened_by,opening_fund) VALUES($1,250.00) RETURNING *", [req.user.id]);
+    await client.query("COMMIT");
+    res.status(201).json({ ok: true, cashSession: created.rows[0] });
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    next(err);
+  } finally { client.release(); }
 });
 
 app.post("/api/sales", auth, cashierOnly, async (req, res, next) => {
@@ -298,7 +313,10 @@ app.post("/api/sales", auth, cashierOnly, async (req, res, next) => {
 
     await client.query("BEGIN");
     const cash = await activeCashSession(client);
-    await client.query("UPDATE cash_sessions SET opened_by=COALESCE(opened_by,$2) WHERE id=$1", [cash.id, req.user.id]);
+    if (!cash) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "Nessuna cassa aperta. Premi prima APRI CASSA." });
+    }
     const sale = await client.query(
       "INSERT INTO sales(cash_session_id,user_id,payment_method,total) VALUES($1,$2,$3,$4) RETURNING id",
       [cash.id, req.user.id, paymentMethod, total]
@@ -337,7 +355,6 @@ app.post("/api/cash/close/:id", auth, cashierOnly, async (req, res, next) => {
       "UPDATE cash_sessions SET closed_at=NOW(), closed_by=$2, closing_cash=$3, closing_pos=$4 WHERE id=$1",
       [id, req.user.id, sums.rows[0].cash, sums.rows[0].pos]
     );
-    await client.query("INSERT INTO cash_sessions(opened_by,opening_fund) VALUES($1,250.00)", [req.user.id]);
     await client.query("COMMIT");
     res.json({ ok: true });
   } catch (err) {
