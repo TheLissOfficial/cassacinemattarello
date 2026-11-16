@@ -26,6 +26,18 @@ const pool = new Pool({
   ssl: isProd ? { rejectUnauthorized: false } : undefined
 });
 
+const allowedOrigins = new Set(["https://thelissofficial.github.io"]);
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin && allowedOrigins.has(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS");
+  }
+  if (req.method === "OPTIONS") return res.sendStatus(204);
+  next();
+});
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: "100kb" }));
 app.use(cookieParser());
@@ -139,7 +151,8 @@ async function initDb() {
 
 async function auth(req, res, next) {
   try {
-    const token = req.cookies.cinematta_session;
+    const authHeader = String(req.headers.authorization || "");
+    const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : req.cookies.cinematta_session;
     if (!token) return res.status(401).json({ error: "Accesso richiesto." });
     const result = await pool.query(`
       SELECT u.id, u.username, u.role, u.active
@@ -182,13 +195,14 @@ app.post("/api/login", loginLimiter, async (req, res, next) => {
     const token = crypto.randomBytes(32).toString("base64url");
     await pool.query("INSERT INTO user_sessions(token_hash,user_id,expires_at) VALUES($1,$2,NOW()+INTERVAL '7 days')", [sha256(token), user.id]);
     res.cookie("cinematta_session", token, cookieOptions);
-    res.json({ user: { username: user.username, role: user.role } });
+    res.json({ token, user: { username: user.username, role: user.role } });
   } catch (err) { next(err); }
 });
 
 app.post("/api/logout", async (req, res, next) => {
   try {
-    const token = req.cookies.cinematta_session;
+    const authHeader = String(req.headers.authorization || "");
+    const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : req.cookies.cinematta_session;
     if (token) await pool.query("DELETE FROM user_sessions WHERE token_hash=$1", [sha256(token)]);
     res.clearCookie("cinematta_session", { path: "/", secure: isProd, sameSite: "strict", httpOnly: true });
     res.json({ ok: true });
@@ -314,6 +328,65 @@ app.post("/api/cash/close/:id", auth, adminOnly, async (req, res, next) => {
     await client.query("ROLLBACK").catch(() => {});
     next(err);
   } finally { client.release(); }
+});
+
+app.get("/api/reports", auth, async (req, res, next) => {
+  try {
+    const params = [];
+    let where = "";
+    if (req.user.role !== "admin") {
+      params.push(req.user.id);
+      where = "WHERE EXISTS (SELECT 1 FROM sales sx WHERE sx.cash_session_id=c.id AND sx.user_id=$1)";
+    }
+    const r = await pool.query(`
+      SELECT c.id,c.opened_at,c.closed_at,c.opening_fund,c.closing_cash,c.closing_pos,
+             COALESCE(SUM(s.total),0)::numeric(12,2) AS revenue,
+             COUNT(DISTINCT s.id)::int AS transactions,
+             opener.username AS opened_by_name, closer.username AS closed_by_name
+      FROM cash_sessions c
+      LEFT JOIN sales s ON s.cash_session_id=c.id
+      LEFT JOIN app_users opener ON opener.id=c.opened_by
+      LEFT JOIN app_users closer ON closer.id=c.closed_by
+      ${where}
+      GROUP BY c.id,opener.username,closer.username
+      ORDER BY c.id DESC LIMIT 200
+    `, params);
+    res.json({ cashSessions: r.rows });
+  } catch (err) { next(err); }
+});
+
+app.get("/api/reports/:id.csv", auth, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || id < 1) return res.status(400).json({ error: "Cassa non valida." });
+    const params = [id];
+    let ownerFilter = "";
+    if (req.user.role !== "admin") {
+      params.push(req.user.id);
+      ownerFilter = "AND s.user_id=$2";
+    }
+    const r = await pool.query(`
+      SELECT s.id AS sale_id,s.created_at,s.payment_method,s.total,
+             u.username,si.product_code,si.product_name,si.quantity,si.unit_price,si.discount_percent
+      FROM sales s
+      JOIN sale_items si ON si.sale_id=s.id
+      JOIN app_users u ON u.id=s.user_id
+      WHERE s.cash_session_id=$1 ${ownerFilter}
+      ORDER BY s.created_at,s.id,si.id
+    `, params);
+    const session = await pool.query("SELECT id FROM cash_sessions WHERE id=$1", [id]);
+    if (!session.rowCount) return res.status(404).json({ error: "Cassa non trovata." });
+    const quote = value => '"' + String(value ?? "").replace(/"/g, '""') + '"';
+    const rows = [["Vendita","Data","Operatore","Pagamento","Codice","Prodotto","Quantità","Prezzo unitario","Sconto %","Totale riga"]];
+    for (const x of r.rows) {
+      const lineTotal = Number(x.unit_price) * Number(x.quantity) * (1 - Number(x.discount_percent) / 100);
+      rows.push([x.sale_id,new Date(x.created_at).toISOString(),x.username,x.payment_method,x.product_code,x.product_name,x.quantity,x.unit_price,x.discount_percent,lineTotal.toFixed(2)]);
+    }
+    const csv = "\uFEFF" + rows.map(row => row.map(quote).join(";")).join("\r\n");
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="resoconto-cassa-${id}.csv"`);
+    res.send(csv);
+  } catch (err) { next(err); }
 });
 
 app.get("/api/admin/users", auth, adminOnly, async (req, res, next) => {
