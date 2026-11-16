@@ -10,6 +10,7 @@ const { Pool } = require("pg");
 const PDFDocument = require("pdfkit");
 
 const app = express();
+app.set("trust proxy", 1); // Render: un proxy fidato davanti a Express
 const PORT = process.env.PORT || 3000;
 const isProd = process.env.NODE_ENV === "production";
 
