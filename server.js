@@ -222,6 +222,7 @@ app.post("/api/sim/sales",auth,adminOnly,(req,res)=>{
   sim.sales.push({id:sim.nextSaleId++,created_at:new Date().toISOString(),payment_method:paymentMethod,total,items:normalized});
   res.json({ok:true,total,change:paymentMethod==="Contanti"?Math.round((Number(cashReceived)-total+Number.EPSILON)*100)/100:0});
 });
+app.post("/api/sim/reset",auth,adminOnly,(req,res)=>{simulations.delete(String(req.user.id));res.json({ok:true});});
 app.post("/api/sim/close",auth,adminOnly,(req,res)=>{
   const sim=simulationFor(req.user.id);if(!sim.openedAt||sim.closedAt)return res.status(409).json({error:"Nessuna cassa di simulazione aperta."});
   sim.closedAt=new Date().toISOString();res.json({ok:true});
