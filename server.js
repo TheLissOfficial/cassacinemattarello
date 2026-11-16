@@ -128,7 +128,7 @@ async function initDb() {
     ALTER TABLE sales ADD COLUMN IF NOT EXISTS voided_by BIGINT REFERENCES app_users(id);
     ALTER TABLE sales ADD COLUMN IF NOT EXISTS void_reason TEXT;
     CREATE INDEX IF NOT EXISTS idx_sales_cash_session ON sales(cash_session_id);
-    SELECT setval(pg_get_serial_sequence('cash_sessions','id'), GREATEST(COALESCE((SELECT MAX(id) FROM cash_sessions),0), (SELECT last_value FROM cash_sessions_id_seq)), TRUE);
+    SELECT setval(pg_get_serial_sequence('cash_sessions','id'), GREATEST(COALESCE((SELECT MAX(id) FROM cash_sessions),1), (SELECT last_value FROM cash_sessions_id_seq)), (SELECT is_called FROM cash_sessions_id_seq) OR EXISTS (SELECT 1 FROM cash_sessions));
     CREATE INDEX IF NOT EXISTS idx_sale_items_product ON sale_items(product_code, product_name);
     CREATE INDEX IF NOT EXISTS idx_user_sessions_expiry ON user_sessions(expires_at);
   `);
@@ -423,6 +423,7 @@ app.get("/api/reports/:id.pdf", auth, async (req, res, next) => {
     const euro = value => new Intl.NumberFormat("it-IT",{style:"currency",currency:"EUR"}).format(Number(value || 0));
     const date = value => value ? new Date(value).toLocaleString("it-IT") : "—";
     const doc = new PDFDocument({size:"A4",margin:44,bufferPages:true,info:{Title:"Resoconto cassa #"+id,Author:"Cinematta POS"}});
+    doc.on("pageAdded",()=>{doc.save();doc.rect(0,0,595,48).fill("#14243A");doc.fillColor("#FFFFFF").font("Helvetica-Bold").fontSize(10).text("CINEMATTA  ·  RESOCONTO CASSA #"+id,44,18);doc.restore();doc.y=62;});
     res.setHeader("Content-Type","application/pdf");
     res.setHeader("Content-Disposition",`attachment; filename="resoconto-cassa-${id}.pdf"`);
     doc.pipe(res);
@@ -494,7 +495,6 @@ app.get("/api/reports/:id.pdf", auth, async (req, res, next) => {
     const range=doc.bufferedPageRange();
     for(let i=0;i<range.count;i++){
       doc.switchToPage(range.start+i);
-      if(i>0){doc.save();doc.rect(0,0,595,48).fill("#14243A");doc.fillColor("#FFFFFF").font("Helvetica-Bold").fontSize(10).text("CINEMATTA  ·  RESOCONTO CASSA #"+id,left,18);doc.restore();}
       doc.moveTo(left,780).lineTo(right,780).lineWidth(.6).strokeColor("#D7DEE8").stroke();
       doc.fillColor("#778397").font("Helvetica").fontSize(8).text("Documento gestionale · Cassa #"+id,left,788,{width:330});
       doc.text("Pagina "+(i+1)+" di "+range.count,left+350,788,{width:157,align:"right"});
