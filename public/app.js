@@ -32,7 +32,10 @@ async function start() {
       return;
     }
     $("closeCash").classList.remove("hidden");
-    if (currentUser.role === "admin") $("openAdmin").classList.remove("hidden");
+    if (currentUser.role === "admin") {
+      $("openAdmin").classList.remove("hidden");
+      $("openAdminClosed").classList.remove("hidden");
+    }
     products = (await api("/api/products")).products;
     renderProducts();
     await refreshCash();
@@ -52,7 +55,9 @@ $("loginForm").addEventListener("submit", async e => {
     await start();
   } catch (err) { $("loginError").textContent = err.message; }
 });
-$("logout").onclick = async () => { try { await api("/api/logout", { method:"POST", body:"{}" }); } finally { authToken = ""; localStorage.removeItem("cinematta_token"); location.reload(); } };
+async function logoutNow() { try { await api("/api/logout", { method:"POST", body:"{}" }); } finally { authToken = ""; localStorage.removeItem("cinematta_token"); location.reload(); } }
+$("logout").onclick = logoutNow;
+$("logoutClosed").onclick = logoutNow;
 
 function renderProducts() {
   const grid = $("productGrid");
@@ -138,6 +143,16 @@ $("closeChange").onclick = () => $("changeModal").classList.add("hidden");
 
 async function refreshCash() {
   const data = await api("/api/sales/current");
+  const isOpen = Boolean(data.cashSession);
+  document.body.classList.toggle("cash-closed", !isOpen);
+  $("cashOpenScreen").classList.toggle("hidden", isOpen);
+  $("closeCash").classList.toggle("hidden", !isOpen);
+  if (!isOpen) {
+    $("fundStatus").textContent = "Nessuna cassa aperta";
+    $("sessionTotal").textContent = `Incasso cassa: ${money(0)}`;
+    $("salesStatsList").textContent = "Apri una cassa per iniziare.";
+    return;
+  }
   $("fundStatus").textContent = `Fondo cassa iniziale: ${money(data.cashSession.opening_fund)}`;
   $("sessionTotal").textContent = `Incasso cassa: ${money(data.totals.revenue)}`;
   $("salesStatsList").innerHTML = data.items.length ? data.items.map(x => `<div>• ${x.quantity} di ${esc(x.name)}</div>`).join("") : "Nessuna vendita effettuata.";
@@ -192,13 +207,57 @@ $("showRanking").onclick = async () => {
       : `<p>Nessuna vendita registrata.</p>`);
   } catch (err) { panel.textContent = err.message; }
 };
+$("openCashButton").onclick = async () => {
+  const button = $("openCashButton");
+  button.disabled = true;
+  button.textContent = "APERTURA IN CORSO...";
+  try {
+    await api("/api/cash/open", { method:"POST", body:"{}" });
+    $("closedReportsPanel").classList.add("hidden");
+    await refreshCash();
+  } catch (err) {
+    alert(err.message);
+    await refreshCash().catch(() => {});
+  } finally {
+    button.disabled = false;
+    button.textContent = "APRI CASSA";
+  }
+};
+$("showReportsClosed").onclick = async () => {
+  const panel = $("closedReportsPanel");
+  panel.classList.toggle("hidden");
+  if (!panel.classList.contains("hidden")) {
+    try {
+      const data = await api("/api/reports");
+      panel.innerHTML = data.cashSessions.length ? data.cashSessions.map(c =>
+        `<div class="report-row"><span><b>Cassa #${c.id}</b> · ${c.closed_at ? "Chiusa" : "Aperta"} · Aperta da: ${esc(c.opened_by_name || "Non registrato")} · Chiusa da: ${esc(c.closed_by_name || "—")} · ${money(c.revenue)} · ${c.transactions} vendite</span><span><button class="btn-action" data-pdf-id="${c.id}">PDF</button> ${["admin","resocontista"].includes(currentUser.role) ? `<button class="btn-action" data-report-id="${c.id}">CSV</button>` : ""}</span></div>`
+      ).join("") : "Nessun resoconto disponibile.";
+    } catch(err) { panel.textContent = err.message; }
+  }
+};
+$("closedReportsPanel").addEventListener("click", async e => {
+  const pdf=e.target.closest("button[data-pdf-id]");
+  const csv=e.target.closest("button[data-report-id]");
+  const target=pdf||csv;
+  if(!target) return;
+  const ext=pdf?"pdf":"csv";
+  try {
+    const response=await fetch(API_BASE+"/api/reports/"+target.dataset[ pdf ? "pdfId" : "reportId"]+"."+ext,{headers:authToken?{Authorization:"Bearer "+authToken}:{}});
+    if(!response.ok) throw new Error("Download non riuscito.");
+    const blob=await response.blob(), url=URL.createObjectURL(blob), link=document.createElement("a");
+    link.href=url; link.download="resoconto-cassa-"+target.dataset[pdf?"pdfId":"reportId"]+"."+ext;
+    document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url);
+  } catch(err) { alert(err.message); }
+});
+$("openAdminClosed").onclick = () => $("openAdmin").click();
+
 $("closeCash").onclick = async () => {
   if (!confirm("Confermi la chiusura della cassa corrente? Lo storico delle vendite resterà conservato.")) return;
   try {
     const current = await api("/api/sales/current");
     await api(`/api/cash/close/${current.cashSession.id}`, { method:"POST", body:"{}" });
     await refreshCash();
-    alert("Cassa chiusa. È stata aperta una nuova sessione.");
+    alert("Cassa chiusa. Per riprendere le vendite, premi APRI CASSA.");
   } catch (err) { showError(err.message); }
 };
 
