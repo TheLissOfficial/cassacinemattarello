@@ -83,3 +83,5 @@ body.report-view .sale-list { max-height:none; }
 #closedReportsPanel { text-align:left; max-height:38vh; overflow:auto; margin-top:18px; }
 body.cash-closed #posContainer > :not(#cashOpenScreen) { display:none !important; }
 body.cash-closed .cash-open-screen { display:flex; }
+
+.simulation-banner{padding:12px;border:2px solid #00d2d3;border-radius:8px;background:#102b35;color:#8ff7ef;text-align:center;font-weight:800;font-size:.82rem;}
