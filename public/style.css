@@ -56,3 +56,14 @@ button { cursor:pointer; }
 .report-row button { white-space:nowrap; }
 
 .sale-list{margin:4px 0 10px 12px;padding:8px;background:#0f1521;border:1px solid #222d42;border-radius:5px}.sale-row{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 2px;border-bottom:1px solid #222d42;font-size:.82rem}.sale-row small{color:#aaa}.sale-row button{white-space:nowrap}
+
+
+/* Modalità Resocontista: consultazione dei soli resoconti */
+body.report-view .pos-container { display:block; padding:18px; }
+body.report-view .sidebar-left { width:100%; min-height:calc(100vh - 36px); }
+body.report-view .sidebar-left > *:not(#showReports):not(#reportsPanel):not(#userBar) { display:none !important; }
+body.report-view #showReports { display:none !important; }
+body.report-view #reportsPanel { display:block !important; max-height:none; overflow:visible; margin:12px 0; }
+body.report-view .report-row { align-items:flex-start; flex-wrap:wrap; padding:12px 4px; }
+body.report-view .report-row > span:last-child { display:flex; gap:6px; flex-wrap:wrap; }
+body.report-view .sale-list { max-height:none; }
