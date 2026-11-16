@@ -121,6 +121,9 @@ async function initDb() {
       unit_price NUMERIC(12,2) NOT NULL,
       discount_percent NUMERIC(5,2) NOT NULL DEFAULT 0
     );
+    ALTER TABLE sales ADD COLUMN IF NOT EXISTS voided_at TIMESTAMPTZ;
+    ALTER TABLE sales ADD COLUMN IF NOT EXISTS voided_by BIGINT REFERENCES app_users(id);
+    ALTER TABLE sales ADD COLUMN IF NOT EXISTS void_reason TEXT;
     CREATE INDEX IF NOT EXISTS idx_sales_cash_session ON sales(cash_session_id);
     CREATE INDEX IF NOT EXISTS idx_sale_items_product ON sale_items(product_code, product_name);
     CREATE INDEX IF NOT EXISTS idx_user_sessions_expiry ON user_sessions(expires_at);
@@ -217,7 +220,8 @@ app.get("/api/ranking", auth, async (req, res, next) => {
     const r = await pool.query(`
       SELECT product_code AS code, product_name AS name, SUM(quantity)::int AS quantity
       FROM sale_items
-      WHERE product_code IS NOT NULL
+      JOIN sales s ON s.id=sale_items.sale_id
+      WHERE product_code IS NOT NULL AND s.voided_at IS NULL
       GROUP BY product_code, product_name
       ORDER BY SUM(quantity) DESC, product_name ASC
     `);
@@ -234,12 +238,12 @@ app.get("/api/sales/current", auth, async (req, res, next) => {
         COALESCE(SUM(total) FILTER (WHERE payment_method='Contanti'),0)::numeric(12,2) AS cash,
         COALESCE(SUM(total) FILTER (WHERE payment_method='POS'),0)::numeric(12,2) AS pos,
         COUNT(*)::int AS transactions
-      FROM sales WHERE cash_session_id=$1
+      FROM sales WHERE cash_session_id=$1 AND voided_at IS NULL
     `, [cash.id]);
     const items = await pool.query(`
       SELECT si.product_name AS name, SUM(si.quantity)::int AS quantity
       FROM sale_items si JOIN sales s ON s.id=si.sale_id
-      WHERE s.cash_session_id=$1 GROUP BY si.product_name ORDER BY SUM(si.quantity) DESC
+      WHERE s.cash_session_id=$1 AND s.voided_at IS NULL GROUP BY si.product_name ORDER BY SUM(si.quantity) DESC
     `, [cash.id]);
     res.json({ cashSession: cash, totals: totals.rows[0], items: items.rows });
   } catch (err) { next(err); }
@@ -315,7 +319,7 @@ app.post("/api/cash/close/:id", auth, adminOnly, async (req, res, next) => {
       SELECT
         COALESCE(SUM(total) FILTER (WHERE payment_method='Contanti'),0)::numeric(12,2) AS cash,
         COALESCE(SUM(total) FILTER (WHERE payment_method='POS'),0)::numeric(12,2) AS pos
-      FROM sales WHERE cash_session_id=$1
+      FROM sales WHERE cash_session_id=$1 AND voided_at IS NULL
     `, [id]);
     await client.query(
       "UPDATE cash_sessions SET closed_at=NOW(), closed_by=$2, closing_cash=$3, closing_pos=$4 WHERE id=$1",
@@ -342,8 +346,8 @@ app.get("/api/reports", auth, async (req, res, next) => {
     }
     const r = await pool.query(`
       SELECT c.id,c.opened_at,c.closed_at,c.opening_fund,c.closing_cash,c.closing_pos,
-             COALESCE(SUM(s.total),0)::numeric(12,2) AS revenue,
-             COUNT(DISTINCT s.id)::int AS transactions,
+             COALESCE(SUM(s.total) FILTER (WHERE s.voided_at IS NULL),0)::numeric(12,2) AS revenue,
+             COUNT(DISTINCT s.id) FILTER (WHERE s.voided_at IS NULL)::int AS transactions,
              opener.username AS opened_by_name, closer.username AS closed_by_name
       FROM cash_sessions c
       ${salesJoin}
@@ -357,6 +361,28 @@ app.get("/api/reports", auth, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+app.get("/api/reports/:id/sales", auth, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || id < 1) return res.status(400).json({ error: "Cassa non valida." });
+    const params = [id];
+    let own = "";
+    if (req.user.role !== "admin") { params.push(req.user.id); own = "AND s.user_id=$2"; }
+    const r = await pool.query("SELECT s.id,s.created_at,s.total,s.payment_method,s.voided_at,s.void_reason,u.username, COALESCE(string_agg(si.product_name || ' × ' || si.quantity, ', ' ORDER BY si.id), '') AS items FROM sales s JOIN app_users u ON u.id=s.user_id LEFT JOIN sale_items si ON si.sale_id=s.id WHERE s.cash_session_id=$1 " + own + " GROUP BY s.id,u.username ORDER BY s.created_at DESC", params);
+    res.json({ sales: r.rows });
+  } catch (err) { next(err); }
+});
+app.post("/api/sales/:id/void", auth, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || id < 1) return res.status(400).json({ error: "Transazione non valida." });
+    const reason = String(req.body.reason || "Annullata").trim().slice(0,200);
+    const owner = req.user.role === "admin" ? "" : "AND user_id=$2";
+    const r = await pool.query("UPDATE sales SET voided_at=NOW(),voided_by=$2,void_reason=$3 WHERE id=$1 AND voided_at IS NULL " + owner + " RETURNING id", [id,req.user.id,reason]);
+    if (!r.rowCount) return res.status(404).json({ error: "Transazione non trovata, già annullata o non appartenente al tuo account." });
+    res.json({ ok:true });
+  } catch (err) { next(err); }
+});
 app.get("/api/reports/:id.csv", auth, async (req, res, next) => {
   try {
     const id = Number(req.params.id);
@@ -373,7 +399,7 @@ app.get("/api/reports/:id.csv", auth, async (req, res, next) => {
       FROM sales s
       JOIN sale_items si ON si.sale_id=s.id
       JOIN app_users u ON u.id=s.user_id
-      WHERE s.cash_session_id=$1 ${ownerFilter}
+      WHERE s.cash_session_id=$1 AND s.voided_at IS NULL ${ownerFilter}
       ORDER BY s.created_at,s.id,si.id
     `, params);
     const session = await pool.query("SELECT id FROM cash_sessions WHERE id=$1", [id]);
