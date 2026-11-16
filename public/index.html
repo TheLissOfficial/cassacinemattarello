@@ -57,6 +57,20 @@
   </div>
 
   <div class="pos-container" id="posContainer">
+    <section id="cashOpenScreen" class="cash-open-screen hidden">
+      <div class="cash-open-card">
+        <div class="cash-open-kicker">CINEMATTA · PUNTO CASSA</div>
+        <h1>Cassa chiusa</h1>
+        <p>Per iniziare a registrare le vendite, apri una nuova sessione.</p>
+        <button id="openCashButton" class="cash-open-button">APRI CASSA</button>
+        <div class="cash-open-secondary">
+          <button id="showReportsClosed" class="btn-action">Resoconti casse</button>
+          <button id="openAdminClosed" class="btn-action hidden">Pannello amministratore</button>
+          <button id="logoutClosed" class="btn-danger">Esci</button>
+        </div>
+        <div id="closedReportsPanel" class="ranking-panel hidden"></div>
+      </div>
+    </section>
     <aside class="sidebar-left">
       <h2>Gestione & Barcode</h2>
       <div class="ticket-input-group">
