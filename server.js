@@ -7,6 +7,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const { Pool } = require("pg");
+const PDFDocument = require("pdfkit");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -383,7 +384,54 @@ app.post("/api/sales/:id/void", auth, async (req, res, next) => {
     res.json({ ok:true });
   } catch (err) { next(err); }
 });
-app.get("/api/reports/:id.csv", auth, async (req, res, next) => {
+app.get("/api/reports/:id.pdf", auth, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || id < 1) return res.status(400).json({ error: "Cassa non valida." });
+    const params = [id];
+    let ownerFilter = "";
+    if (req.user.role !== "admin") { params.push(req.user.id); ownerFilter = "AND s.user_id=$2"; }
+    const session = await pool.query("SELECT id,opened_at,closed_at,opening_fund,closing_cash,closing_pos FROM cash_sessions WHERE id=$1", [id]);
+    if (!session.rowCount) return res.status(404).json({ error: "Cassa non trovata." });
+    const rows = await pool.query(`
+      SELECT s.id,s.created_at,s.payment_method,s.total,u.username,
+             COALESCE(string_agg(si.product_name || ' x ' || si.quantity, ', ' ORDER BY si.id), '') AS items
+      FROM sales s JOIN app_users u ON u.id=s.user_id
+      LEFT JOIN sale_items si ON si.sale_id=s.id
+      WHERE s.cash_session_id=$1 AND s.voided_at IS NULL ${ownerFilter}
+      GROUP BY s.id,u.username ORDER BY s.created_at,s.id
+    `, params);
+    const doc = new PDFDocument({ size: "A4", margin: 42 });
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="resoconto-cassa-${id}.pdf"`);
+    doc.pipe(res);
+    const cash = session.rows[0];
+    const euro = value => "EUR " + Number(value || 0).toFixed(2);
+    doc.fontSize(18).text("Resoconto cassa #" + id);
+    doc.moveDown(0.4).fontSize(10).text("Apertura: " + new Date(cash.opened_at).toLocaleString("it-IT"));
+    doc.text("Chiusura: " + (cash.closed_at ? new Date(cash.closed_at).toLocaleString("it-IT") : "Aperta"));
+    doc.text("Fondo iniziale: " + euro(cash.opening_fund));
+    if (req.user.role === "admin") {
+      doc.text("Contanti a chiusura: " + euro(cash.closing_cash));
+      doc.text("POS a chiusura: " + euro(cash.closing_pos));
+    }
+    doc.moveDown().fontSize(12).text("Vendite", { underline: true });
+    doc.moveDown(0.4).fontSize(9);
+    let total = 0;
+    for (const sale of rows.rows) {
+      if (doc.y > 735) doc.addPage();
+      total += Number(sale.total);
+      doc.font("Helvetica-Bold").text("#" + sale.id + " · " + new Date(sale.created_at).toLocaleString("it-IT") + " · " + sale.payment_method + " · " + euro(sale.total));
+      doc.font("Helvetica").text("Operatore: " + sale.username);
+      if (sale.items) doc.text("Articoli: " + sale.items);
+      doc.moveDown(0.45);
+    }
+    doc.moveDown().font("Helvetica-Bold").fontSize(12).text("Totale vendite incluse: " + euro(total));
+    doc.end();
+  } catch (err) { next(err); }
+});
+
+app.get("/api/reports/:id.csv", auth, adminOnly, async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isSafeInteger(id) || id < 1) return res.status(400).json({ error: "Cassa non valida." });
@@ -415,6 +463,24 @@ app.get("/api/reports/:id.csv", auth, async (req, res, next) => {
     res.setHeader("Content-Disposition", `attachment; filename="resoconto-cassa-${id}.csv"`);
     res.send(csv);
   } catch (err) { next(err); }
+});
+
+app.delete("/api/admin/reports/:id", auth, adminOnly, async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || id < 1) return res.status(400).json({ error: "Cassa non valida." });
+    await client.query("BEGIN");
+    const session = await client.query("SELECT id,closed_at FROM cash_sessions WHERE id=$1 FOR UPDATE", [id]);
+    if (!session.rowCount) { await client.query("ROLLBACK"); return res.status(404).json({ error: "Resoconto non trovato." }); }
+    if (!session.rows[0].closed_at) { await client.query("ROLLBACK"); return res.status(409).json({ error: "Non puoi eliminare una cassa ancora aperta." }); }
+    await client.query("DELETE FROM sale_items WHERE sale_id IN (SELECT id FROM sales WHERE cash_session_id=$1)", [id]);
+    await client.query("DELETE FROM sales WHERE cash_session_id=$1", [id]);
+    await client.query("DELETE FROM cash_sessions WHERE id=$1", [id]);
+    await client.query("COMMIT");
+    res.json({ ok: true });
+  } catch (err) { await client.query("ROLLBACK").catch(() => {}); next(err); }
+  finally { client.release(); }
 });
 
 app.get("/api/admin/users", auth, adminOnly, async (req, res, next) => {
