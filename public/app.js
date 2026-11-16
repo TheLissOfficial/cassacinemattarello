@@ -142,7 +142,7 @@ async function loadReports() {
   try {
     const data = await api("/api/reports");
     panel.innerHTML = data.cashSessions.length ? data.cashSessions.map(c =>
-      `<div class="report-row"><span><b>Cassa #${c.id}</b> · ${c.closed_at ? "Chiusa" : "Aperta"} · ${money(c.revenue)} · ${c.transactions} vendite</span><span><button class="btn-action" data-sales="${c.id}">Transazioni</button> <button class="btn-action" data-report-id="${c.id}">Scarica CSV</button></span></div><div id="sales-${c.id}" class="sale-list hidden"></div>`
+      `<div class="report-row"><span><b>Cassa #${c.id}</b> · ${c.closed_at ? "Chiusa" : "Aperta"} · ${money(c.revenue)} · ${c.transactions} vendite</span><span><button class="btn-action" data-sales="${c.id}">Transazioni</button> <button class="btn-action" data-pdf-id="${c.id}">Scarica PDF</button> ${currentUser.role === "admin" ? `<button class="btn-action" data-report-id="${c.id}">Scarica CSV</button> <button class="btn-danger" data-delete-report="${c.id}">Elimina</button>` : ""}</span></div><div id="sales-${c.id}" class="sale-list hidden"></div>`
     ).join("") : "Nessun resoconto disponibile.";
   } catch (err) { panel.textContent = err.message; }
 }
@@ -151,12 +151,26 @@ $("reportsPanel").addEventListener("click", async e => {
   const show=e.target.closest("button[data-sales]");
   const cancel=e.target.closest("button[data-void-sale]");
   const download=e.target.closest("button[data-report-id]");
+  const pdf=e.target.closest("button[data-pdf-id]");
+  const deleteReport=e.target.closest("button[data-delete-report]");
   if(show) {
     const id=show.dataset.sales, box=$("sales-"+id); box.classList.toggle("hidden"); if(box.classList.contains("hidden")) return;
     try { const d=await api("/api/reports/"+id+"/sales"); box.innerHTML=d.sales.length ? d.sales.map(x=>`<div class="sale-row"><span><b>Vendita #${x.id}</b> · ${new Date(x.created_at).toLocaleString("it-IT")} · ${esc(x.username)} · ${money(x.total)}<br><small>${esc(x.items||"")}${x.voided_at?" · ANNULLATA":""}</small></span>${x.voided_at?"":`<button class="btn-danger" data-void-sale="${x.id}">Annulla</button>`}</div>`).join("") : "Nessuna vendita."; } catch(err) { box.textContent=err.message; }
     return;
   }
   if(cancel) { if(!confirm("Annullare questa vendita? Sarà esclusa da incassi e classifica.")) return; const reason=prompt("Motivo (facoltativo):")||"Annullata"; try { await api("/api/sales/"+cancel.dataset.voidSale+"/void",{method:"POST",body:JSON.stringify({reason})}); await loadReports(); await refreshCash(); } catch(err) { alert(err.message); } return; }
+  if(deleteReport) {
+    const id=deleteReport.dataset.deleteReport;
+    if(!confirm("Eliminare definitivamente il resoconto della cassa #"+id+" e tutte le sue vendite? L'operazione non si può annullare.")) return;
+    try { await api("/api/admin/reports/"+id,{method:"DELETE"}); await loadReports(); await refreshAdmin(); }
+    catch(err) { alert(err.message); }
+    return;
+  }
+  if(pdf) {
+    try { const response=await fetch(API_BASE+"/api/reports/"+pdf.dataset.pdfId+".pdf",{headers:authToken?{Authorization:"Bearer "+authToken}:{}}); if(!response.ok) throw new Error("Download PDF non riuscito."); const blob=await response.blob(); const url=URL.createObjectURL(blob); const link=document.createElement("a"); link.href=url; link.download="resoconto-cassa-"+pdf.dataset.pdfId+".pdf"; document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url); }
+    catch(err) { alert(err.message); }
+    return;
+  }
   if(download) {
     try { const response=await fetch(API_BASE+"/api/reports/"+download.dataset.reportId+".csv",{headers:authToken?{Authorization:"Bearer "+authToken}:{}}); if(!response.ok) throw new Error("Download non riuscito."); const blob=await response.blob(); const url=URL.createObjectURL(blob); const link=document.createElement("a"); link.href=url; link.download="resoconto-cassa-"+download.dataset.reportId+".csv"; document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url); } catch(err) { alert(err.message); }
   }
