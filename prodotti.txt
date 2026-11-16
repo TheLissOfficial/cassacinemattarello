@@ -1,0 +1,14 @@
+4250221300335,PopCorn Cinema,2.00,Snack
+42105220,Coca Cola,2.50,Bevande
+90375323,Coca Cola Zero,2.50,Bevande
+5449000270849,Coca Cola 3zero,2.50,Bevande
+8001620001486,The Limone,2.00,Bevande
+8001620001448,The Pesca,2.00,Bevande
+8001620001929,The Pesca Det.,2.00,Bevande
+80165460,Acqua Naturale,1.50,Bevande
+80165477,Acqua Frizzante,1.50,Bevande
+8009,? Patatine Paprika,2.50,Snack
+8009,? Patatine Classiche,2.50,Snack
+8011,? Haribo Coccodrilli,2.00,Snack
+8012,? M&M's Peanut,3.00,Snack
+4250221383321,Chocolate C. Rolls,2.50,Snack
