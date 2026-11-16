@@ -150,10 +150,6 @@ async function initDb() {
     console.warn("ADMIN_USERNAME/ADMIN_PASSWORD non configurati: crea l'admin nelle variabili d'ambiente e riavvia.");
   }
 
-  const open = await pool.query("SELECT id FROM cash_sessions WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1");
-  if (!open.rowCount) {
-    await pool.query("INSERT INTO cash_sessions(opening_fund) VALUES(250.00)");
-  }
 }
 
 async function auth(req, res, next) {
