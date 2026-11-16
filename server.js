@@ -398,8 +398,8 @@ app.get("/api/reports/:id.pdf", auth, async (req, res, next) => {
     const session = await pool.query("SELECT c.id,c.opened_at,c.closed_at,c.opening_fund,c.closing_cash,c.closing_pos,opener.username AS opened_by_name,closer.username AS closed_by_name FROM cash_sessions c LEFT JOIN app_users opener ON opener.id=c.opened_by LEFT JOIN app_users closer ON closer.id=c.closed_by WHERE c.id=$1", [id]);
     if (!session.rowCount) return res.status(404).json({ error: "Cassa non trovata." });
     const rows = await pool.query(`
-      SELECT s.id,s.created_at,s.payment_method,s.total,u.username,
-             COALESCE(string_agg(si.product_name || ' x ' || si.quantity, ', ' ORDER BY si.id), '') AS items
+      SELECT s.id,s.created_at,s.payment_method,s.total,s.voided_at,s.void_reason,u.username,
+             COALESCE(string_agg(si.product_name || ' x ' || si.quantity || ' @ EUR ' || si.unit_price || ' sconto ' || si.discount_percent || '%', ', ' ORDER BY si.id), '') AS items
       FROM sales s JOIN app_users u ON u.id=s.user_id
       LEFT JOIN sale_items si ON si.sale_id=s.id
       WHERE s.cash_session_id=$1 ${ownerFilter}
@@ -424,16 +424,23 @@ app.get("/api/reports/:id.pdf", auth, async (req, res, next) => {
     doc.moveDown().fontSize(12).text("Vendite", { underline: true });
     doc.moveDown(0.4).fontSize(9);
     let total = 0;
+    const cashierTotals = new Map();
     for (const sale of rows.rows) {
       if (doc.y > 735) doc.addPage();
-      total += Number(sale.total);
+      if (!sale.voided_at) {
+        total += Number(sale.total);
+        const entry = cashierTotals.get(sale.username) || { count: 0, total: 0 };
+        entry.count += 1; entry.total += Number(sale.total); cashierTotals.set(sale.username, entry);
+      }
       doc.font("Helvetica-Bold").text("#" + sale.id + " · " + new Date(sale.created_at).toLocaleString("it-IT") + " · " + sale.payment_method + " · " + euro(sale.total));
       doc.font("Helvetica").text("Cassiere: " + sale.username);
       if (sale.voided_at) doc.text("STORNATA il " + new Date(sale.voided_at).toLocaleString("it-IT") + " · Motivo: " + (sale.void_reason || "—"));
       if (sale.items) doc.text("Articoli: " + sale.items);
       doc.moveDown(0.45);
     }
-    doc.moveDown().font("Helvetica-Bold").fontSize(12).text("Totale vendite incluse: " + euro(total));
+    doc.moveDown(0.5).font("Helvetica-Bold").fontSize(11).text("Riepilogo per cassiere");
+    for (const [username, value] of cashierTotals) doc.font("Helvetica").fontSize(9).text(username + " · " + value.count + " transazioni valide · " + euro(value.total));
+    doc.moveDown().font("Helvetica-Bold").fontSize(12).text("Totale vendite valide: " + euro(total));
     doc.end();
   } catch (err) { next(err); }
 });
