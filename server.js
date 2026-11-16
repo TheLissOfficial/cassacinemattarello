@@ -334,8 +334,10 @@ app.get("/api/reports", auth, async (req, res, next) => {
   try {
     const params = [];
     let where = "";
+    let salesJoin = "LEFT JOIN sales s ON s.cash_session_id=c.id";
     if (req.user.role !== "admin") {
       params.push(req.user.id);
+      salesJoin = "LEFT JOIN sales s ON s.cash_session_id=c.id AND s.user_id=$1";
       where = "WHERE EXISTS (SELECT 1 FROM sales sx WHERE sx.cash_session_id=c.id AND sx.user_id=$1)";
     }
     const r = await pool.query(`
@@ -344,7 +346,7 @@ app.get("/api/reports", auth, async (req, res, next) => {
              COUNT(DISTINCT s.id)::int AS transactions,
              opener.username AS opened_by_name, closer.username AS closed_by_name
       FROM cash_sessions c
-      LEFT JOIN sales s ON s.cash_session_id=c.id
+      ${salesJoin}
       LEFT JOIN app_users opener ON opener.id=c.opened_by
       LEFT JOIN app_users closer ON closer.id=c.closed_by
       ${where}
