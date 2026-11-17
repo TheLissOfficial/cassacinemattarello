@@ -458,7 +458,7 @@ app.get("/api/reports/:id.pdf", auth, async (req, res, next) => {
     let ownerFilter = "";
     if (req.user.role === "operatore") { params.push(req.user.id); ownerFilter = "AND s.user_id=$2"; }
 
-    const sessionResult = await pool.query(\`
+    const sessionResult = await pool.query(`
       SELECT c.id,c.opened_at,c.closed_at,c.opening_fund,c.closing_cash,c.closing_pos,
         (SELECT COUNT(*) FROM cash_sessions c2
          WHERE (c2.opened_at AT TIME ZONE 'Europe/Rome')::date=(c.opened_at AT TIME ZONE 'Europe/Rome')::date
@@ -468,25 +468,25 @@ app.get("/api/reports/:id.pdf", auth, async (req, res, next) => {
       LEFT JOIN app_users opener ON opener.id=c.opened_by
       LEFT JOIN app_users closer ON closer.id=c.closed_by
       WHERE c.id=$1
-    \`, [id]);
+    `, [id]);
     if (!sessionResult.rowCount) return res.status(404).json({ error: "Cassa non trovata." });
 
-    const salesResult = await pool.query(\`
+    const salesResult = await pool.query(`
       SELECT s.id,s.created_at,s.payment_method,s.total,s.voided_at,s.void_reason,u.username
       FROM sales s JOIN app_users u ON u.id=s.user_id
-      WHERE s.cash_session_id=$1 \` + ownerFilter + \`
+      WHERE s.cash_session_id=$1 ` + ownerFilter + `
       ORDER BY s.created_at,s.id
-    \`, params);
-    const itemsResult = await pool.query(\`
+    `, params);
+    const itemsResult = await pool.query(`
       SELECT s.id AS sale_id,s.voided_at,si.product_code,si.product_name,si.quantity,
         si.unit_price,si.discount_percent,
         (si.unit_price*si.quantity) AS gross_total,
         (si.unit_price*si.quantity*si.discount_percent/100) AS discount_total,
         (si.unit_price*si.quantity*(1-si.discount_percent/100)) AS net_total
       FROM sales s JOIN sale_items si ON si.sale_id=s.id
-      WHERE s.cash_session_id=$1 \` + ownerFilter + \`
+      WHERE s.cash_session_id=$1 ` + ownerFilter + `
       ORDER BY s.created_at,s.id,si.id
-    \`, params);
+    `, params);
 
     const cash = sessionResult.rows[0];
     const sales = salesResult.rows;
