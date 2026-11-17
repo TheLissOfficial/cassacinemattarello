@@ -457,8 +457,8 @@ app.get("/api/reports/:id.pdf", auth, async (req, res, next) => {
     const params = [id];
     let ownerFilter = "";
     if (req.user.role === "operatore") { params.push(req.user.id); ownerFilter = "AND s.user_id=$2"; }
-    const session = await pool.query("SELECT c.id,c.opened_at,c.closed_at,c.opening_fund,c.closing_cash,c.closing_pos,
-              (SELECT COUNT(*) FROM cash_sessions c2 WHERE (c2.opened_at AT TIME ZONE 'Europe/Rome')::date = (c.opened_at AT TIME ZONE 'Europe/Rome')::date AND (c2.opened_at,c2.id) <= (c.opened_at,c.id))::int AS daily_number, opener.username AS opened_by_name,closer.username AS closed_by_name FROM cash_sessions c LEFT JOIN app_users opener ON opener.id=c.opened_by LEFT JOIN app_users closer ON closer.id=c.closed_by WHERE c.id=$1", [id]);
+    const session = await pool.query(`SELECT c.id,c.opened_at,c.closed_at,c.opening_fund,c.closing_cash,c.closing_pos,
+              (SELECT COUNT(*) FROM cash_sessions c2 WHERE (c2.opened_at AT TIME ZONE 'Europe/Rome')::date = (c.opened_at AT TIME ZONE 'Europe/Rome')::date AND (c2.opened_at,c2.id) <= (c.opened_at,c.id))::int AS daily_number, opener.username AS opened_by_name,closer.username AS closed_by_name FROM cash_sessions c LEFT JOIN app_users opener ON opener.id=c.opened_by LEFT JOIN app_users closer ON closer.id=c.closed_by WHERE c.id=$1`, [id]);
     if (!session.rowCount) return res.status(404).json({ error: "Cassa non trovata." });
     const rows = await pool.query(`
       SELECT s.id,s.created_at,s.payment_method,s.total,s.voided_at,s.void_reason,u.username,
