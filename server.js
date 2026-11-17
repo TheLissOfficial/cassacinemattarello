@@ -658,7 +658,7 @@ app.get("/api/admin/cash-sessions", auth, adminOnly, async (req, res, next) => {
   try {
     const r = await pool.query(`
       SELECT c.id,c.opened_at,c.closed_at,c.opening_fund,c.closing_cash,c.closing_pos,
-              (SELECT COUNT(*) FROM cash_sessions c2 WHERE (c2.opened_at AT TIME ZONE 'Europe/Rome')::date = (c.opened_at AT TIME ZONE 'Europe/Rome')::date AND (c2.opened_at,c2.id) <= (c.opened_at,c.id))::int AS daily_number
+              (SELECT COUNT(*) FROM cash_sessions c2 WHERE (c2.opened_at AT TIME ZONE 'Europe/Rome')::date = (c.opened_at AT TIME ZONE 'Europe/Rome')::date AND (c2.opened_at,c2.id) <= (c.opened_at,c.id))::int AS daily_number,
              COALESCE(SUM(s.total) FILTER (WHERE s.voided_at IS NULL),0)::numeric(12,2) AS revenue,
              COUNT(s.id) FILTER (WHERE s.voided_at IS NULL)::int AS transactions,
              opener.username AS opened_by_name, closer.username AS closed_by_name
