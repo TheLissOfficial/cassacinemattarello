@@ -8,6 +8,7 @@ let authToken = localStorage.getItem("cinematta_token") || "";
 let simulationMode = false;
 const money = n => new Intl.NumberFormat("it-IT", { style:"currency", currency:"EUR" }).format(Number(n || 0));
 const esc = value => String(value).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+const roleLabel = role => ({ operatore:"Cassiere", admin:"Amministratore", resocontista:"Resocontista" }[role] || role);
 async function api(url, options={}) {
   if (simulationMode) { if(url === "/api/sales/current") url="/api/sim/current"; else if(url === "/api/cash/open") url="/api/sim/open"; else if(url === "/api/sales") url="/api/sim/sales"; else if(url.startsWith("/api/cash/close/")) url="/api/sim/close"; }
   const response = await fetch(API_BASE + url, { ...options, credentials:"omit", headers:{ "Content-Type":"application/json", ...(authToken ? { Authorization:"Bearer " + authToken } : {}), ...(options.headers||{}) } });
@@ -24,7 +25,7 @@ async function start() {
     currentUser = me.user;
     $("loginOverlay").classList.add("hidden");
     $("posContainer").classList.remove("hidden");
-    $("currentUser").textContent = `👤 ${currentUser.username} (${currentUser.role === "resocontista" ? "Resocontista" : currentUser.role})`;
+    $("currentUser").textContent = `👤 ${currentUser.username} (${roleLabel(currentUser.role)})`;
     const reportOnly = currentUser.role === "resocontista";
     simulationMode=false;
     $("simulationToggle").classList.toggle("hidden",currentUser.role!=="admin");
@@ -44,6 +45,7 @@ async function start() {
     products = (await api("/api/products")).products;
     renderProducts();
     await refreshCash();
+    $("barcodeScanInput").focus();
   } catch (_) {
     $("loginOverlay").classList.remove("hidden");
     $("posContainer").classList.add("hidden");
@@ -71,7 +73,7 @@ function renderProducts() {
     const button = document.createElement("button");
     button.className = "product-btn";
     button.innerHTML = `<span class="product-name">${esc(product.name)}</span><span class="product-price">${money(product.price)}</span><span class="product-category">${esc(product.category)}</span>`;
-    button.addEventListener("click", () => addProduct(product));
+    button.addEventListener("click", () => { addProduct(product); $("barcodeScanInput").focus(); });
     grid.appendChild(button);
   });
 }
@@ -81,12 +83,26 @@ function addProduct(product) {
   else cart.push({ code:product.code, name:product.name, price:Number(product.price), quantity:1, discount:0 });
   renderCart();
 }
+function processBarcode() {
+  const input = $("barcodeScanInput");
+  const code = input.value.replace(/[\\r\\n\\t]/g, "").trim();
+  input.value = "";
+  if (!code) { input.focus(); return; }
+  const product = products.find(p => String(p.code).trim().toLowerCase() === code.toLowerCase());
+  if (product) {
+    addProduct(product);
+    showError("");
+  } else {
+    showError(`Codice "${code}" non trovato nel catalogo.`);
+  }
+  input.focus();
+}
 $("barcodeScanInput").addEventListener("keydown", e => {
-  if (e.key !== "Enter") return;
-  const code = $("barcodeScanInput").value.trim();
-  const product = products.find(p => p.code === code);
-  if (product) { addProduct(product); $("barcodeScanInput").value = ""; showError(""); }
-  else showError(`Codice "${code}" non trovato.`);
+  // Le pistole USB/Bluetooth in modalità tastiera inviano il codice seguito da Invio o Tab.
+  if (e.key === "Enter" || e.key === "Tab") {
+    e.preventDefault();
+    processBarcode();
+  }
 });
 $("addTicket").onclick = () => {
   const price = Number($("ticketPriceInput").value);
@@ -274,7 +290,7 @@ $("closeAdmin").onclick = () => $("adminModal").classList.add("hidden");
 async function refreshAdmin() {
   const [usersData, cashData] = await Promise.all([api("/api/admin/users"), api("/api/admin/cash-sessions")]);
   $("adminUsers").innerHTML = usersData.users.map(u => `
-    <div class="admin-row"><span><b>${esc(u.username)}</b> · ${esc(u.role)} · ${u.active ? "Attivo" : "Disattivato"}</span>
+    <div class="admin-row"><span><b>${esc(u.username)}</b> · ${esc(roleLabel(u.role))} · ${u.active ? "Attivo" : "Disattivato"}</span>
     <span><button class="btn-danger" data-user-id="${u.id}" data-active="${u.active ? "false":"true"}">${u.active ? "Disattiva":"Riattiva"}</button> <button class="btn-danger" data-delete-user="${u.id}">Elimina</button></span></div>`).join("");
   $("adminCashSessions").innerHTML = cashData.cashSessions.map(c => `
     <div class="admin-row"><span><b>Cassa #${c.daily_number} - ${new Date(c.opened_at).toLocaleDateString("it-IT")}</b> · ${c.closed_at ? "Chiusa" : "Aperta"} · Aperta da: ${esc(c.opened_by_name || "Non registrato")} · Chiusa da: ${esc(c.closed_by_name || "—")} · ${money(c.revenue)} · ${c.transactions} transazioni</span>
