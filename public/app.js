@@ -85,7 +85,7 @@ function addProduct(product) {
 }
 function processBarcode() {
   const input = $("barcodeScanInput");
-  const code = input.value.replace(/[\\r\\n\\t]/g, "").trim();
+  const code = input.value.trim();
   input.value = "";
   if (!code) { input.focus(); return; }
   const product = products.find(p => String(p.code).trim().toLowerCase() === code.toLowerCase());
@@ -177,6 +177,7 @@ async function refreshCash() {
   $("fundStatus").textContent = `Fondo cassa iniziale: ${money(data.cashSession.opening_fund)}`;
   $("sessionTotal").textContent = `Incasso cassa: ${money(data.totals.revenue)}`;
   $("salesStatsList").innerHTML = data.items.length ? data.items.map(x => `<div>• ${x.quantity} di ${esc(x.name)}</div>`).join("") : "Nessuna vendita effettuata.";
+  $("barcodeScanInput").focus();
 }
 async function loadReports() {
   const panel = $("reportsPanel");
