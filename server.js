@@ -476,8 +476,8 @@ app.get("/api/reports/:id.pdf", auth, async (req, res, next) => {
     }
     const euro = value => new Intl.NumberFormat("it-IT",{style:"currency",currency:"EUR"}).format(Number(value || 0));
     const date = value => value ? new Date(value).toLocaleString("it-IT") : "—";
-    const doc = new PDFDocument({size:"A4",margin:44,bufferPages:true,info:{Title:"Resoconto cassa #"+id,Author:"Cinematta POS"}});
-    doc.on("pageAdded",()=>{doc.save();doc.rect(0,0,595,48).fill("#14243A");doc.fillColor("#FFFFFF").font("Helvetica-Bold").fontSize(10).text("CINEMATTA  ·  RESOCONTO CASSA #"+id,44,18);doc.restore();doc.y=62;});
+    const doc = new PDFDocument({size:"A4",margin:44,bufferPages:true,info:{Title:"Resoconto cassa #"+id+" - "+new Date(cash.opened_at).toLocaleDateString("it-IT"),Author:"Cinematta POS"}});
+    doc.on("pageAdded",()=>{doc.save();doc.rect(0,0,595,48).fill("#14243A");doc.fillColor("#FFFFFF").font("Helvetica-Bold").fontSize(10).text("CINEMATTA  ·  RESOCONTO CASSA #"+id+" - "+new Date(cash.opened_at).toLocaleDateString("it-IT"),44,18);doc.restore();doc.y=62;});
     res.setHeader("Content-Type","application/pdf");
     res.setHeader("Content-Disposition",`attachment; filename="resoconto-cassa-${id}.pdf"`);
     doc.pipe(res);
@@ -550,7 +550,7 @@ app.get("/api/reports/:id.pdf", auth, async (req, res, next) => {
     for(let i=0;i<range.count;i++){
       doc.switchToPage(range.start+i);
       doc.moveTo(left,780).lineTo(right,780).lineWidth(.6).strokeColor("#D7DEE8").stroke();
-      doc.fillColor("#778397").font("Helvetica").fontSize(8).text("Documento gestionale · Cassa #"+id,left,788,{width:330});
+      doc.fillColor("#778397").font("Helvetica").fontSize(8).text("Documento gestionale · Cassa #"+id+" - "+new Date(cash.opened_at).toLocaleDateString("it-IT"),left,788,{width:330});
       doc.text("Pagina "+(i+1)+" di "+range.count,left+350,788,{width:157,align:"right"});
     }
     doc.end();
