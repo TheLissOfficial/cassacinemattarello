@@ -412,6 +412,7 @@ app.get("/api/reports", auth, async (req, res, next) => {
     }
     const r = await pool.query(`
       SELECT c.id,c.opened_at,c.closed_at,c.opening_fund,c.closing_cash,c.closing_pos,
+              (SELECT COUNT(*) FROM cash_sessions c2 WHERE (c2.opened_at AT TIME ZONE 'Europe/Rome')::date = (c.opened_at AT TIME ZONE 'Europe/Rome')::date AND (c2.opened_at,c2.id) <= (c.opened_at,c.id))::int AS daily_number
              COALESCE(SUM(s.total) FILTER (WHERE s.voided_at IS NULL),0)::numeric(12,2) AS revenue,
              COUNT(DISTINCT s.id) FILTER (WHERE s.voided_at IS NULL)::int AS transactions,
              opener.username AS opened_by_name, closer.username AS closed_by_name
@@ -456,7 +457,8 @@ app.get("/api/reports/:id.pdf", auth, async (req, res, next) => {
     const params = [id];
     let ownerFilter = "";
     if (req.user.role === "operatore") { params.push(req.user.id); ownerFilter = "AND s.user_id=$2"; }
-    const session = await pool.query("SELECT c.id,c.opened_at,c.closed_at,c.opening_fund,c.closing_cash,c.closing_pos,opener.username AS opened_by_name,closer.username AS closed_by_name FROM cash_sessions c LEFT JOIN app_users opener ON opener.id=c.opened_by LEFT JOIN app_users closer ON closer.id=c.closed_by WHERE c.id=$1", [id]);
+    const session = await pool.query("SELECT c.id,c.opened_at,c.closed_at,c.opening_fund,c.closing_cash,c.closing_pos,
+              (SELECT COUNT(*) FROM cash_sessions c2 WHERE (c2.opened_at AT TIME ZONE 'Europe/Rome')::date = (c.opened_at AT TIME ZONE 'Europe/Rome')::date AND (c2.opened_at,c2.id) <= (c.opened_at,c.id))::int AS daily_numberopener.username AS opened_by_name,closer.username AS closed_by_name FROM cash_sessions c LEFT JOIN app_users opener ON opener.id=c.opened_by LEFT JOIN app_users closer ON closer.id=c.closed_by WHERE c.id=$1", [id]);
     if (!session.rowCount) return res.status(404).json({ error: "Cassa non trovata." });
     const rows = await pool.query(`
       SELECT s.id,s.created_at,s.payment_method,s.total,s.voided_at,s.void_reason,u.username,
@@ -476,8 +478,8 @@ app.get("/api/reports/:id.pdf", auth, async (req, res, next) => {
     }
     const euro = value => new Intl.NumberFormat("it-IT",{style:"currency",currency:"EUR"}).format(Number(value || 0));
     const date = value => value ? new Date(value).toLocaleString("it-IT") : "—";
-    const doc = new PDFDocument({size:"A4",margin:44,bufferPages:true,info:{Title:"Resoconto cassa #"+id+" - "+new Date(cash.opened_at).toLocaleDateString("it-IT"),Author:"Cinematta POS"}});
-    doc.on("pageAdded",()=>{doc.save();doc.rect(0,0,595,48).fill("#14243A");doc.fillColor("#FFFFFF").font("Helvetica-Bold").fontSize(10).text("CINEMATTA  ·  RESOCONTO CASSA #"+id+" - "+new Date(cash.opened_at).toLocaleDateString("it-IT"),44,18);doc.restore();doc.y=62;});
+    const doc = new PDFDocument({size:"A4",margin:44,bufferPages:true,info:{Title:"Resoconto cassa #"+cash.daily_number+" - "+new Date(cash.opened_at).toLocaleDateString("it-IT"),Author:"Cinematta POS"}});
+    doc.on("pageAdded",()=>{doc.save();doc.rect(0,0,595,48).fill("#14243A");doc.fillColor("#FFFFFF").font("Helvetica-Bold").fontSize(10).text("CINEMATTA  ·  RESOCONTO CASSA #"+cash.daily_number+" - "+new Date(cash.opened_at).toLocaleDateString("it-IT"),44,18);doc.restore();doc.y=62;});
     res.setHeader("Content-Type","application/pdf");
     res.setHeader("Content-Disposition",`attachment; filename="resoconto-cassa-${id}.pdf"`);
     doc.pipe(res);
@@ -550,7 +552,7 @@ app.get("/api/reports/:id.pdf", auth, async (req, res, next) => {
     for(let i=0;i<range.count;i++){
       doc.switchToPage(range.start+i);
       doc.moveTo(left,780).lineTo(right,780).lineWidth(.6).strokeColor("#D7DEE8").stroke();
-      doc.fillColor("#778397").font("Helvetica").fontSize(8).text("Documento gestionale · Cassa #"+id+" - "+new Date(cash.opened_at).toLocaleDateString("it-IT"),left,788,{width:330});
+      doc.fillColor("#778397").font("Helvetica").fontSize(8).text("Documento gestionale · Cassa #"+cash.daily_number+" - "+new Date(cash.opened_at).toLocaleDateString("it-IT"),left,788,{width:330});
       doc.text("Pagina "+(i+1)+" di "+range.count,left+350,788,{width:157,align:"right"});
     }
     doc.end();
@@ -656,6 +658,7 @@ app.get("/api/admin/cash-sessions", auth, adminOnly, async (req, res, next) => {
   try {
     const r = await pool.query(`
       SELECT c.id,c.opened_at,c.closed_at,c.opening_fund,c.closing_cash,c.closing_pos,
+              (SELECT COUNT(*) FROM cash_sessions c2 WHERE (c2.opened_at AT TIME ZONE 'Europe/Rome')::date = (c.opened_at AT TIME ZONE 'Europe/Rome')::date AND (c2.opened_at,c2.id) <= (c.opened_at,c.id))::int AS daily_number
              COALESCE(SUM(s.total) FILTER (WHERE s.voided_at IS NULL),0)::numeric(12,2) AS revenue,
              COUNT(s.id) FILTER (WHERE s.voided_at IS NULL)::int AS transactions,
              opener.username AS opened_by_name, closer.username AS closed_by_name
