@@ -457,103 +457,258 @@ app.get("/api/reports/:id.pdf", auth, async (req, res, next) => {
     const params = [id];
     let ownerFilter = "";
     if (req.user.role === "operatore") { params.push(req.user.id); ownerFilter = "AND s.user_id=$2"; }
-    const session = await pool.query(`SELECT c.id,c.opened_at,c.closed_at,c.opening_fund,c.closing_cash,c.closing_pos,
-              (SELECT COUNT(*) FROM cash_sessions c2 WHERE (c2.opened_at AT TIME ZONE 'Europe/Rome')::date = (c.opened_at AT TIME ZONE 'Europe/Rome')::date AND (c2.opened_at,c2.id) <= (c.opened_at,c.id))::int AS daily_number, opener.username AS opened_by_name,closer.username AS closed_by_name FROM cash_sessions c LEFT JOIN app_users opener ON opener.id=c.opened_by LEFT JOIN app_users closer ON closer.id=c.closed_by WHERE c.id=$1`, [id]);
-    if (!session.rowCount) return res.status(404).json({ error: "Cassa non trovata." });
-    const rows = await pool.query(`
-      SELECT s.id,s.created_at,s.payment_method,s.total,s.voided_at,s.void_reason,u.username,
-             COALESCE(string_agg(si.product_name || ' x ' || si.quantity || ' @ EUR ' || si.unit_price || ' sconto ' || si.discount_percent || '%', ', ' ORDER BY si.id), '') AS items
+
+    const sessionResult = await pool.query(\`
+      SELECT c.id,c.opened_at,c.closed_at,c.opening_fund,c.closing_cash,c.closing_pos,
+        (SELECT COUNT(*) FROM cash_sessions c2
+         WHERE (c2.opened_at AT TIME ZONE 'Europe/Rome')::date=(c.opened_at AT TIME ZONE 'Europe/Rome')::date
+         AND (c2.opened_at,c2.id)<=(c.opened_at,c.id))::int AS daily_number,
+        opener.username AS opened_by_name,closer.username AS closed_by_name
+      FROM cash_sessions c
+      LEFT JOIN app_users opener ON opener.id=c.opened_by
+      LEFT JOIN app_users closer ON closer.id=c.closed_by
+      WHERE c.id=$1
+    \`, [id]);
+    if (!sessionResult.rowCount) return res.status(404).json({ error: "Cassa non trovata." });
+
+    const salesResult = await pool.query(\`
+      SELECT s.id,s.created_at,s.payment_method,s.total,s.voided_at,s.void_reason,u.username
       FROM sales s JOIN app_users u ON u.id=s.user_id
-      LEFT JOIN sale_items si ON si.sale_id=s.id
-      WHERE s.cash_session_id=$1 ${ownerFilter}
-      GROUP BY s.id,u.username ORDER BY s.created_at,s.id
-    `, params);
-    const cash = session.rows[0];
-    const valid = rows.rows.filter(x => !x.voided_at);
-    const total = valid.reduce((sum,x) => sum + Number(x.total),0);
+      WHERE s.cash_session_id=$1 \` + ownerFilter + \`
+      ORDER BY s.created_at,s.id
+    \`, params);
+    const itemsResult = await pool.query(\`
+      SELECT s.id AS sale_id,s.voided_at,si.product_code,si.product_name,si.quantity,
+        si.unit_price,si.discount_percent,
+        (si.unit_price*si.quantity) AS gross_total,
+        (si.unit_price*si.quantity*si.discount_percent/100) AS discount_total,
+        (si.unit_price*si.quantity*(1-si.discount_percent/100)) AS net_total
+      FROM sales s JOIN sale_items si ON si.sale_id=s.id
+      WHERE s.cash_session_id=$1 \` + ownerFilter + \`
+      ORDER BY s.created_at,s.id,si.id
+    \`, params);
+
+    const cash = sessionResult.rows[0];
+    const sales = salesResult.rows;
+    const valid = sales.filter(x => !x.voided_at);
+    const voided = sales.filter(x => x.voided_at);
+    const validItems = itemsResult.rows.filter(x => !x.voided_at);
+    const euro = value => new Intl.NumberFormat("it-IT",{style:"currency",currency:"EUR"}).format(Number(value || 0));
+    const date = value => value ? new Date(value).toLocaleString("it-IT",{timeZone:"Europe/Rome"}) : "—";
+    const money = value => Number(value || 0);
+    const sum = (list,key) => list.reduce((v,x)=>v+money(x[key]),0);
+    const total = sum(valid,"total");
+    const cashSales = valid.filter(x=>x.payment_method==="Contanti");
+    const posSales = valid.filter(x=>x.payment_method==="POS");
+    const cashTotal = sum(cashSales,"total");
+    const posTotal = sum(posSales,"total");
+    const grossTotal = sum(validItems,"gross_total");
+    const discountTotal = sum(validItems,"discount_total");
+    const openingFund = money(cash.opening_fund);
+    const closingCashSales = cash.closed_at ? money(cash.closing_cash) : cashTotal;
+    const closingPosSales = cash.closed_at ? money(cash.closing_pos) : posTotal;
+    const expectedCash = openingFund + closingCashSales;
+    const avgTicket = valid.length ? total / valid.length : 0;
+
+    const productMap = new Map();
+    for (const item of validItems) {
+      const key = String(item.product_code || "") + "|" + item.product_name;
+      const p = productMap.get(key) || {code:item.product_code,name:item.product_name,quantity:0,gross:0,discount:0,net:0};
+      p.quantity += Number(item.quantity);
+      p.gross += money(item.gross_total);
+      p.discount += money(item.discount_total);
+      p.net += money(item.net_total);
+      productMap.set(key,p);
+    }
+    const productRows = Array.from(productMap.values()).sort((a,b)=>b.quantity-a.quantity || a.name.localeCompare(b.name,"it"));
     const byCashier = new Map();
     for (const sale of valid) {
-      const v = byCashier.get(sale.username) || {count:0,total:0};
-      v.count++; v.total += Number(sale.total); byCashier.set(sale.username,v);
+      const v = byCashier.get(sale.username) || {count:0,total:0,cash:0,pos:0};
+      v.count++;
+      v.total += money(sale.total);
+      v[sale.payment_method==="Contanti"?"cash":"pos"] += money(sale.total);
+      byCashier.set(sale.username,v);
     }
-    const euro = value => new Intl.NumberFormat("it-IT",{style:"currency",currency:"EUR"}).format(Number(value || 0));
-    const date = value => value ? new Date(value).toLocaleString("it-IT") : "—";
-    const doc = new PDFDocument({size:"A4",margin:44,bufferPages:true,info:{Title:"Resoconto cassa #"+cash.daily_number+" - "+new Date(cash.opened_at).toLocaleDateString("it-IT"),Author:"Cinematta POS"}});
-    doc.on("pageAdded",()=>{doc.save();doc.rect(0,0,595,48).fill("#14243A");doc.fillColor("#FFFFFF").font("Helvetica-Bold").fontSize(10).text("CINEMATTA  ·  RESOCONTO CASSA #"+cash.daily_number+" - "+new Date(cash.opened_at).toLocaleDateString("it-IT"),44,18);doc.restore();doc.y=62;});
+    const itemsBySale = new Map();
+    for (const item of itemsResult.rows) {
+      if (!itemsBySale.has(String(item.sale_id))) itemsBySale.set(String(item.sale_id),[]);
+      itemsBySale.get(String(item.sale_id)).push(item);
+    }
+
+    const doc = new PDFDocument({
+      size:"A4",margin:42,bufferPages:true,
+      info:{Title:"Resoconto cassa #" + cash.daily_number + " - " + new Date(cash.opened_at).toLocaleDateString("it-IT"),Author:"Cinematta POS"}
+    });
     res.setHeader("Content-Type","application/pdf");
-    res.setHeader("Content-Disposition",`attachment; filename="resoconto-cassa-${id}.pdf"`);
+    res.setHeader("Content-Disposition",'attachment; filename="resoconto-cassa-' + id + '.pdf"');
     doc.pipe(res);
-    const left=44, right=551, width=507;
-    const rule=(y)=>{doc.moveTo(left,y).lineTo(right,y).lineWidth(.7).strokeColor("#D7DEE8").stroke();};
-    const section=(label)=>{
-      if(doc.y>700) doc.addPage();
-      doc.moveDown(.5); doc.font("Helvetica-Bold").fontSize(11).fillColor("#183153").text(label.toUpperCase(),left,doc.y,{width});
-      const y=doc.y+5; rule(y); doc.y=y+12;
+
+    const left=42, right=553, width=511;
+    const navy="#172B46", muted="#5C6878", line="#D7DEE6", pale="#F2F5F8", paleBlue="#EAF0F6", red="#A83232";
+    const rule=y=>doc.moveTo(left,y).lineTo(right,y).lineWidth(.65).strokeColor(line).stroke();
+    const ensure=height=>{if(doc.y+height>748) doc.addPage();};
+    const section=label=>{
+      ensure(35);
+      doc.moveDown(.45);
+      doc.font("Helvetica-Bold").fontSize(11).fillColor(navy).text(label,left,doc.y,{width});
+      rule(doc.y+5);
+      doc.y+=17;
     };
-    const header=()=>{
-      doc.save();
-      doc.rect(0,0,595,92).fill("#14243A");
-      doc.fillColor("#FFFFFF").font("Helvetica-Bold").fontSize(19).text("CINEMATTA",left,24);
-      doc.font("Helvetica").fontSize(9).fillColor("#D8E3F0").text("REPORT CASSA  ·  DOCUMENTO DI RIEPILOGO",left,52);
-      doc.font("Helvetica-Bold").fontSize(17).fillColor("#FFFFFF").text("#"+id,460,32,{width:90,align:"right"});
-      doc.restore();
-      doc.y=112;
+    const cell=(value,x,y,w,opts={})=>{
+      doc.font(opts.bold?"Helvetica-Bold":"Helvetica").fontSize(opts.size||8).fillColor(opts.color||"#263445")
+        .text(String(value==null?"—":value),x,y,{width:w,align:opts.align||"left",lineBreak:false,ellipsis:true});
     };
-    header();
-    doc.fillColor("#17243A").font("Helvetica-Bold").fontSize(16).text("Resoconto della cassa");
-    doc.moveDown(.2).fillColor("#66758A").font("Helvetica").fontSize(9).text("Generato il "+date(new Date()));
+    const tableHeader=(labels,widths)=>{
+      ensure(25);
+      const y=doc.y;
+      doc.rect(left,y,width,21).fill(navy);
+      let x=left;
+      labels.forEach((label,i)=>{cell(label,x+5,y+6,widths[i]-10,{bold:true,size:7,color:"#FFFFFF",align:i===0?"left":"right"});x+=widths[i];});
+      doc.y=y+25;
+    };
+    const tableRow=(values,widths,opts={})=>{
+      const h=opts.height||22;
+      ensure(h+3);
+      const y=doc.y;
+      if(opts.fill) doc.rect(left,y,width,h).fill(opts.fill);
+      let x=left;
+      values.forEach((value,i)=>{cell(value,x+5,y+6,widths[i]-10,{bold:!!opts.bold,size:opts.size||7.5,color:opts.color,align:i===0?"left":"right"});x+=widths[i];});
+      doc.y=y+h;
+      if(opts.rule!==false) rule(doc.y);
+    };
+    const keyValue=(label,value,x,y,w)=>{
+      doc.roundedRect(x,y,w,34,3).fill(pale);
+      cell(label.toUpperCase(),x+8,y+6,w-16,{size:6.8,color:muted});
+      cell(value,x+8,y+18,w-16,{size:9,bold:true,color:navy});
+    };
+
+    doc.rect(0,0,595,88).fill(navy);
+    doc.fillColor("#FFFFFF").font("Helvetica-Bold").fontSize(19).text("CINEMATTA POS",left,19);
+    doc.font("Helvetica").fontSize(10).fillColor("#E0E8F1").text("RESOCONTO DI CASSA",left,46);
+    doc.font("Helvetica-Bold").fontSize(15).fillColor("#FFFFFF").text("CASSA #" + cash.daily_number,390,27,{width:163,align:"right"});
+    doc.y=104;
+    doc.font("Helvetica-Bold").fontSize(15).fillColor(navy).text("Resoconto di Cassa",left,doc.y);
+    doc.moveDown(.25);
+    doc.font("Helvetica").fontSize(8).fillColor(muted).text("Generato il " + date(new Date()),left,doc.y);
+    doc.moveDown(.7);
+
     section("Dati della sessione");
     const meta=[
-      ["Apertura",date(cash.opened_at)],["Cassiere apertura",cash.opened_by_name||"Non registrato"],
-      ["Chiusura",cash.closed_at?date(cash.closed_at):"Sessione ancora aperta"],["Cassiere chiusura",cash.closed_by_name||"—"],
-      ["Fondo iniziale",euro(cash.opening_fund)]
+      ["Data apertura",date(cash.opened_at)],
+      ["Data chiusura",cash.closed_at?date(cash.closed_at):"Cassa ancora aperta"],
+      ["Cassiere apertura",cash.opened_by_name||"Non registrato"],
+      ["Cassiere chiusura",cash.closed_by_name||"—"],
+      ["Fondo cassa iniziale",euro(openingFund)],
+      ["Durata sessione",cash.closed_at?Math.max(0,Math.round((new Date(cash.closed_at)-new Date(cash.opened_at))/60000))+" minuti":"In corso"]
     ];
-    if(req.user.role!=="operatore") meta.push(["Contanti a chiusura",euro(cash.closing_cash)],["POS a chiusura",euro(cash.closing_pos)]);
-    meta.forEach((item,i)=>{
-      const col=i%2, row=Math.floor(i/2), x=left+col*258, y=doc.y+row*39;
-      doc.roundedRect(x,y,246,32,4).fill("#F1F5F9");
-      doc.fillColor("#68778B").font("Helvetica").fontSize(7.5).text(item[0].toUpperCase(),x+9,y+5,{width:225});
-      doc.fillColor("#17243A").font("Helvetica-Bold").fontSize(9).text(item[1],x+9,y+16,{width:225});
-    });
-    doc.y += Math.ceil(meta.length/2)*39+5;
-    section("Riepilogo economico");
-    const stats=[["Transazioni valide",String(valid.length)],["Transazioni annullate",String(rows.rows.length-valid.length)],["Incasso valido",euro(total)]];
-    const statW=width/3;
-    stats.forEach((v,i)=>{
-      const x=left+i*statW;
-      doc.roundedRect(x+2,doc.y,statW-8,48,4).fill("#EAF0F7");
-      doc.fillColor("#65758A").font("Helvetica").fontSize(7.5).text(v[0].toUpperCase(),x+10,doc.y+8,{width:statW-20});
-      doc.fillColor("#183153").font("Helvetica-Bold").fontSize(i===2?12:13).text(v[1],x+10,doc.y+23,{width:statW-20});
-    });
-    doc.y+=60;
-    section("Riepilogo per cassiere");
-    if(!byCashier.size) doc.font("Helvetica").fontSize(9).fillColor("#596579").text("Nessuna transazione valida.");
-    for(const [username,v] of byCashier){
-      doc.font("Helvetica-Bold").fontSize(9).fillColor("#17243A").text(username,left,doc.y,{continued:true});
-      doc.font("Helvetica").fillColor("#596579").text("   ·   "+v.count+" transazioni   ·   "+euro(v.total));
-    }
-    section("Dettaglio transazioni");
-    if(!rows.rows.length) doc.font("Helvetica").fontSize(9).fillColor("#596579").text("Nessuna transazione registrata.");
-    for(const sale of rows.rows){
-      const detail=(sale.items||"Articoli non disponibili");
-      const estimated=78+doc.heightOfString(detail,{width:width-18,fontSize:8.2})+((sale.voided_at)?24:0);
-      if(doc.y+estimated>745) doc.addPage();
+    for(let i=0;i<meta.length;i+=2){
       const y=doc.y;
-      doc.roundedRect(left,y,width,Math.min(estimated,180),4).fill(sale.voided_at?"#FFF1F0":"#F4F7FA");
-      doc.fillColor("#17243A").font("Helvetica-Bold").fontSize(9).text("Vendita #"+sale.id,left+10,y+8,{width:150});
-      doc.font("Helvetica").fontSize(8).fillColor("#4E5D70").text(date(sale.created_at)+"   ·   "+sale.payment_method,left+155,y+8,{width:width-175,align:"right"});
-      doc.fillColor("#17243A").font("Helvetica-Bold").fontSize(9).text(euro(sale.total),left+10,y+24,{width:width-20,align:"right"});
-      doc.font("Helvetica").fontSize(8.2).fillColor("#35445A").text("Cassiere: "+sale.username,left+10,y+25,{width:width-100});
-      doc.font("Helvetica").fontSize(8.2).fillColor("#35445A").text("Articoli: "+detail,left+10,y+43,{width:width-20});
-      if(sale.voided_at) doc.font("Helvetica-Bold").fontSize(7.8).fillColor("#A83232").text("ANNULLATA · "+date(sale.voided_at)+" · Motivo: "+(sale.void_reason||"—"),left+10,doc.y+4,{width:width-20});
-      doc.y=y+estimated+7;
+      keyValue(meta[i][0],meta[i][1],left,y,250);
+      if(meta[i+1]) keyValue(meta[i+1][0],meta[i+1][1],left+261,y,250);
+      doc.y=y+40;
     }
+
+    section("Riepilogo");
+    const summary=[
+      ["Fondo iniziale",euro(openingFund)],
+      ["Incasso contanti",euro(cashTotal)],
+      ["Incasso POS",euro(posTotal)],
+      ["Incasso totale",euro(total)],
+      ["Sconti concessi",euro(discountTotal)],
+      ["Fondo contanti previsto",euro(expectedCash)],
+      ["Transazioni valide",String(valid.length)],
+      ["Transazioni annullate",String(voided.length)],
+      ["Scontrino medio",euro(avgTicket)]
+    ];
+    const sumW=width/3;
+    for(let i=0;i<summary.length;i+=3){
+      const y=doc.y;
+      for(let j=0;j<3;j++) if(summary[i+j]) keyValue(summary[i+j][0],summary[i+j][1],left+j*(sumW+0.5),y,sumW-5);
+      doc.y=y+40;
+    }
+    doc.font("Helvetica").fontSize(7).fillColor(muted).text("Il fondo contanti previsto è calcolato sommando il fondo iniziale agli incassi in contanti registrati; non rappresenta una verifica fisica del denaro presente.",left,doc.y,{width});
+    doc.moveDown(.5);
+
+    section("Prodotti venduti");
+    if(!productRows.length) {
+      doc.font("Helvetica").fontSize(8).fillColor(muted).text("Nessun prodotto venduto.",left,doc.y);
+      doc.moveDown();
+    } else {
+      const widths=[155,52,76,72,76,80];
+      tableHeader(["Articolo","Quantità","Prezzo medio","Lordo","Sconti","Incasso"],widths);
+      for(const p of productRows){
+        const avg=p.quantity?p.gross/p.quantity:0;
+        tableRow([p.name,String(p.quantity),euro(avg),euro(p.gross),euro(p.discount),euro(p.net)],widths);
+      }
+      tableRow(["TOTALE",String(validItems.reduce((v,x)=>v+Number(x.quantity),0)),"",euro(grossTotal),euro(discountTotal),euro(total)],widths,{bold:true,fill:paleBlue,height:24});
+    }
+
+    section("Riepilogo per metodo di pagamento");
+    const payWidths=[150,120,120,121];
+    tableHeader(["Metodo","Transazioni","Incasso","Incidenza"],payWidths);
+    const pct=v=>total?((v/total)*100).toLocaleString("it-IT",{maximumFractionDigits:1})+"%":"0%";
+    tableRow(["Contanti",String(cashSales.length),euro(cashTotal),pct(cashTotal)],payWidths);
+    tableRow(["POS",String(posSales.length),euro(posTotal),pct(posTotal)],payWidths);
+    tableRow(["TOTALE",String(valid.length),euro(total),pct(total)],payWidths,{bold:true,fill:paleBlue,height:24});
+
+    section("Riepilogo per cassiere");
+    if(!byCashier.size) doc.font("Helvetica").fontSize(8).fillColor(muted).text("Nessuna transazione valida.",left,doc.y);
+    else {
+      const widths=[150,100,100,80,81];
+      tableHeader(["Cassiere","Transazioni","Incasso","Contanti","POS"],widths);
+      for(const [username,v] of byCashier) tableRow([username,String(v.count),euro(v.total),euro(v.cash),euro(v.pos)],widths);
+    }
+
+    section("Dettaglio transazioni");
+    if(!sales.length) {
+      doc.font("Helvetica").fontSize(8).fillColor(muted).text("Nessuna transazione registrata.",left,doc.y);
+    }
+    for(const sale of sales){
+      const saleItems=itemsBySale.get(String(sale.id))||[];
+      const cancelled=!!sale.voided_at;
+      ensure(75);
+      const y=doc.y;
+      doc.roundedRect(left,y,width,Math.max(62,48+saleItems.length*15+(cancelled?18:0)),3).fill(cancelled?"#FFF1F0":pale);
+      cell("TRANSAZIONE #" + sale.id,left+9,y+8,170,{bold:true,size:9,color:cancelled?red:navy});
+      cell(date(sale.created_at),left+180,y+9,205,{size:7.5,color:muted});
+      cell(sale.payment_method,left+390,y+8,110,{bold:true,size:8,align:"right"});
+      cell("Cassiere: " + sale.username,left+9,y+25,245,{size:7.5});
+      cell("Totale: " + euro(sale.total),left+260,y+25,240,{bold:true,size:8,align:"right"});
+      let iy=y+43;
+      for(const item of saleItems){
+        const lineLabel=item.product_name+" · "+item.quantity+" × "+euro(item.unit_price)+" · sconto "+money(item.discount_percent).toLocaleString("it-IT")+"%";
+        cell(lineLabel,left+14,iy,365,{size:7,color:"#39485A"});
+        cell(euro(item.net_total),left+390,iy,105,{size:7,bold:true,align:"right"});
+        iy+=15;
+      }
+      if(cancelled) {
+        cell("ANNULLATA il " + date(sale.voided_at) + " · Motivo: " + (sale.void_reason||"Non specificato"),left+9,iy+2,width-18,{bold:true,size:7,color:red});
+        iy+=17;
+      }
+      doc.y=Math.max(iy+7,y+62);
+      rule(doc.y-3);
+    }
+
+    section("Controllo di chiusura");
+    const closeRows=[
+      ["Contanti registrati alla chiusura",cash.closed_at?euro(closingCashSales):"Cassa ancora aperta"],
+      ["POS registrato alla chiusura",cash.closed_at?euro(closingPosSales):"Cassa ancora aperta"],
+      ["Fondo contanti previsto (fondo iniziale + contanti)",euro(expectedCash)],
+      ["Incasso complessivo registrato",euro(total)]
+    ];
+    for(const row of closeRows){
+      ensure(19);
+      cell(row[0],left,doc.y,width-130,{size:8});
+      cell(row[1],left+width-125,doc.y,125,{size:8,bold:true,align:"right"});
+      doc.y+=16;
+    }
+
     const range=doc.bufferedPageRange();
     for(let i=0;i<range.count;i++){
       doc.switchToPage(range.start+i);
-      doc.moveTo(left,780).lineTo(right,780).lineWidth(.6).strokeColor("#D7DEE8").stroke();
-      doc.fillColor("#778397").font("Helvetica").fontSize(8).text("Documento gestionale · Cassa #"+cash.daily_number+" - "+new Date(cash.opened_at).toLocaleDateString("it-IT"),left,788,{width:330});
-      doc.text("Pagina "+(i+1)+" di "+range.count,left+350,788,{width:157,align:"right"});
+      doc.moveTo(left,780).lineTo(right,780).lineWidth(.6).strokeColor(line).stroke();
+      doc.fillColor(muted).font("Helvetica").fontSize(7).text("Cinematta POS · Cassa #" + cash.daily_number + " · " + new Date(cash.opened_at).toLocaleDateString("it-IT"),left,788,{width:350});
+      doc.text("Pagina " + (i+1) + " di " + range.count,left+350,788,{width:161,align:"right"});
     }
     doc.end();
   } catch(err) { next(err); }
