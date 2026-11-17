@@ -580,7 +580,7 @@ app.get("/api/reports/:id.csv", auth, async (req, res, next) => {
     const session = await pool.query("SELECT id FROM cash_sessions WHERE id=$1", [id]);
     if (!session.rowCount) return res.status(404).json({ error: "Cassa non trovata." });
     const quote = value => '"' + String(value ?? "").replace(/"/g, '""') + '"';
-    const rows = [["Vendita","Data","Operatore","Pagamento","Codice","Prodotto","Quantità","Prezzo unitario","Sconto %","Totale riga"]];
+    const rows = [["Vendita","Data","Cassiere","Pagamento","Codice","Prodotto","Quantità","Prezzo unitario","Sconto %","Totale riga"]];
     for (const x of r.rows) {
       const lineTotal = Number(x.unit_price) * Number(x.quantity) * (1 - Number(x.discount_percent) / 100);
       rows.push([x.sale_id,new Date(x.created_at).toISOString(),x.username,x.payment_method,x.product_code,x.product_name,x.quantity,x.unit_price,x.discount_percent,lineTotal.toFixed(2)]);
