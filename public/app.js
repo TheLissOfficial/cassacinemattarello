@@ -83,6 +83,8 @@ function addProduct(product) {
   else cart.push({ code:product.code, name:product.name, price:Number(product.price), quantity:1, discount:0 });
   renderCart();
 }
+let barcodeIdleTimer = null;
+let lastBarcodeKeyAt = 0;
 function processBarcode() {
   const input = $("barcodeScanInput");
   const code = input.value.trim();
@@ -98,11 +100,25 @@ function processBarcode() {
   input.focus();
 }
 $("barcodeScanInput").addEventListener("keydown", e => {
-  // Le pistole USB/Bluetooth in modalità tastiera inviano il codice seguito da Invio o Tab.
+  const input = $("barcodeScanInput");
   if (e.key === "Enter" || e.key === "Tab") {
     e.preventDefault();
+    clearTimeout(barcodeIdleTimer);
+    processBarcode();
+    return;
+  }
+  if (e.key.length !== 1) return;
+  const now = Date.now();
+  // La pausa tra i caratteri segnala la fine della scansione, senza tasti aggiuntivi.
+  if (input.value && now - lastBarcodeKeyAt > 120) {
+    clearTimeout(barcodeIdleTimer);
     processBarcode();
   }
+  lastBarcodeKeyAt = now;
+  clearTimeout(barcodeIdleTimer);
+  barcodeIdleTimer = setTimeout(() => {
+    if (document.activeElement === input && input.value.trim()) processBarcode();
+  }, 180);
 });
 $("addTicket").onclick = () => {
   const price = Number($("ticketPriceInput").value);
