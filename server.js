@@ -262,12 +262,12 @@ app.get("/api/products", auth, cashierOnly, (req, res) => res.json({ products })
 app.get("/api/ranking", auth, cashierOnly, async (req, res, next) => {
   try {
     const r = await pool.query(`
-      SELECT product_code AS code, product_name AS name, SUM(quantity)::int AS quantity
-      FROM sale_items
+      SELECT si.product_code AS code, si.product_name AS name, SUM(si.quantity)::int AS quantity
+      FROM sale_items si
       JOIN sales s ON s.id=si.sale_id
-      WHERE product_code IS NOT NULL AND s.voided_at IS NULL
-      GROUP BY product_code, product_name
-      ORDER BY SUM(quantity) DESC, product_name ASC
+      WHERE si.product_code IS NOT NULL AND s.voided_at IS NULL
+      GROUP BY si.product_code, si.product_name
+      ORDER BY SUM(si.quantity) DESC, si.product_name ASC
     `);
     res.json({ ranking: r.rows });
   } catch (err) { next(err); }
