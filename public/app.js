@@ -301,6 +301,7 @@ $("closeCash").onclick = async () => {
 
 $("openAdmin").onclick = async () => {
   $("adminModal").classList.remove("hidden");
+  $("adminCurrentAccount").textContent = currentUser ? `Account collegato: ${currentUser.username} · ${roleLabel(currentUser.role)}` : "Account non rilevato";
   await refreshAdmin();
 };
 $("closeAdmin").onclick = () => $("adminModal").classList.add("hidden");
