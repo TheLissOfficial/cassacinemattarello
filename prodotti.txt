@@ -7,8 +7,8 @@
 8001620001929,The Pesca Det.,2.00,Bevande
 80165460,Acqua Naturale,1.50,Bevande
 80165477,Acqua Frizzante,1.50,Bevande
-8009,Patatine Paprika,2.50,Snack
-8009,Patatine Classiche,2.50,Snack
-8011,Haribo Coccodrilli,2.00,Snack
-8012,M&M's Peanut,3.00,Snack
+8019,Sist. Patatine Paprika,2.50,Snack
+8009,Sist. Patatine Classiche,2.50,Snack
+8011,Sist. Haribo Coccodrilli,2.00,Snack
+8012,Sist. M&M's Peanut,3.00,Snack
 4250221383321,Chocolate C. Rolls,2.50,Snack
