@@ -78,7 +78,10 @@ function loadProducts() {
   return products;
 }
 const products = loadProducts();
-const productByCode = new Map(products.map(p => [p.code, p]));
+const productByCode = new Map();
+for (const p of products) {
+  if (!productByCode.has(p.code)) productByCode.set(p.code, p);
+}
 
 async function initDb() {
   await pool.query(`
